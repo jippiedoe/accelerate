@@ -3,15 +3,19 @@
 
 
 
-module Data.Array.Accelerate.Trafo.Fusion {- (export list) -} where
+module Data.Array.Accelerate.Trafo.NewFusion {- (export list) -} where
 
 import Data.Array.Accelerate.AST
-import Data.Array.Accelerate.Trafo.Base
-import Data.Array.Accelerate.Trafo.Sharing
 
 
-
-
+doAllFusion :: OpenAcc () a -> FusedAcc () a
+doAllFusion openacc = fusedacc
+    where
+        letboundacc = letBindEverything openacc
+        graph = makeGraph letboundacc
+        partition = orderPartition graph $ makePartition graph
+        groupedacc = rewriteAST letboundacc partition
+        fusedacc = finalizeFusion groupedacc
 
 -- "hope the environment works with me"
 
@@ -29,7 +33,7 @@ let bind everything
 openacc aenv a -> letboudacc aenv a
 
 generate a graph (more work than it seems, but not too hard) (again, the environment could help us out here)
-letboundacc () a -> graph
+LabelledLetBoundAcc () a -> graph
 
 generate and solve an ilp, for example
 graph -> partition
@@ -45,16 +49,35 @@ rewrite ast by floating let bindings, but also sometimes sinking them, which is 
 if we work on preOpenAcc, the environment and idx's can tell us all we need to know about the safety of these transformations but they also make them hard to execute
 The partial ordering on the partitions should also be able to tell us about the safety of all the strictly neccesary sinking
 To seperate work a bit, just group them together (preferably honoring the partial order amongst themselves, to keep it typecorrect)
-letboundacc -> partition -> groupedLetboundAcc
-    groupedLetboundAcc should just contain one extra construct, "everything below this in the AST is a single fusion group"
+LabelledLetBoundAcc -> partition -> groupedLabelledLetBoundAcc
+    groupedLabelledLetBoundAcc should just contain one extra construct, "everything below this in the AST is a single fusion group"
 
 assign the horizontal/vertical/diagonal fusions
 group -> fusedgroup
 -}
 
 
+data LabelledLetBoundAcc aenv a = LabelledLetBoundAcc ()
+data GroupedLabelledLetBoundAcc aenv a = GroupedLabelledLetBoundAcc ()
+data FusedAcc aenv a = FusedAcc ()
 
+letBindEverything :: OpenAcc aenv a -> LabelledLetBoundAcc aenv a
+letBindEverything = undefined
 
+makeGraph :: LabelledLetBoundAcc () a -> DirectedAcyclicGraph
+makeGraph = undefined
+
+makePartition :: DirectedAcyclicGraph -> [[NodeId]]
+makePartition = undefined
+
+orderPartition :: DirectedAcyclicGraph -> [[NodeId]] -> [[NodeId]]
+orderPartition = undefined
+
+rewriteAST :: LabelledLetBoundAcc aenv a -> [[NodeId]] -> GroupedLabelledLetBoundAcc aenv a
+rewriteAST = undefined
+
+finalizeFusion :: GroupedLabelledLetBoundAcc aenv a -> FusedAcc aenv a
+finalizeFusion = undefined
 
 data DirectedAcyclicGraph = DAG 
     { nodes :: [NodeId]
@@ -66,15 +89,6 @@ data DirectedAcyclicGraph = DAG
 data DirectedAcyclicGraphAcc aenv a = DAGAcc NodeId (PreOpenAcc DirectedAcyclicGraphAcc aenv a)
 
 newtype NodeId = NodeId Int
-
-
-labelAST :: OpenAcc aenv a -> DirectedAcyclicGraphAcc aenv a
-labelAST = undefined -- label each node
-        
-
-makeGraph :: DirectedAcyclicGraphAcc aenv a -> DirectedAcyclicGraph
-makeGraph = undefined
-
 
 
 
@@ -91,67 +105,3 @@ permute: in all directions with producers and with other permutes
 stencil(2): in all directions with producers and with other stencils
 -}
 
-
-
-instance Shape sh => Eq sh where
-    x == y = shapeToList x == shapeToList y
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-combine :: Shape -> Shape -> Maybe Shape
-combine x y = if x == y then Just x else Nothing
-
--- The shape of the source array needed to compute this
-class HasIterationShape a where
-    iterationShape :: a -> Maybe Shape
-  
-instance HasIterationShape OpenAcc where
-    iterationShape (OpenAcc x) = iterationShape x
-
-instance HasIterationShape acc => HasIterationShape PreOpenAcc acc aenv a where
-    iterationShape (ALet lhs xs {-in-} ys)  = iterationShape xs -- not relevant
-    iterationShape (AVar xs              )  = Nothing -- iterationShape xs
-    iterationShape (APair xs ys          )  = iterationShape xs `combine` iterationShape ys
-    iterationShape  ANil                    = Nothing -- Just Z?
-    iterationShape (Apply f xs           )  = Nothing -- don't know
-    iterationShape  AForeign{}              = Nothing -- nope
-    iterationShape (Cond c xs ys         )  = iterationShape xs `combine` iterationShape ys --assuming the condition is not relevant here?
-    iterationShape  Awhile{}                = Nothing
-    iterationShape (Use (Array sh e)     )  = Just sh
-    iterationShape (Unit e               )  = Just Z
-    iterationShape (Reshape sh xs        )  = Nothing -- depending on how this is in the backend
-    iterationShape (Generate e f         )  = Nothing -- TODO get size from the exp when it's static
-    iterationShape (Transform e f g xs   )  = iterationShape xs
-    iterationShape (Replicate sl e xs    )  = iterationShape xs
-    iterationShape (Slice ix xs sl       )  = iterationShape xs
-    iterationShape (Map f xs             )  = iterationShape xs
-    iterationShape (ZipWith f xs ys      )  = iterationShape xs `combine` iterationShape ys
-    iterationShape (Fold f e xs          )  = iterationShape xs
-    iterationShape (Fold1 f xs           )  = iterationShape xs
-    iterationShape (FoldSeg f e xs s     )  = iterationShape xs
-    iterationShape (Fold1Seg f xs s      )  = iterationShape xs
-    iterationShape (Scanl f e xs         )  = iterationShape xs
-    iterationShape (Scanl' f e xs        )  = iterationShape xs
-    iterationShape (Scanl1 f xs          )  = iterationShape xs
-    iterationShape (Scanr f e xs         )  = iterationShape xs -- these go right to left, so maybe don't fuse as well
-    iterationShape (Scanr' f e xs        )  = iterationShape xs -- these go right to left, so maybe don't fuse as well
-    iterationShape (Scanr1 f xs          )  = iterationShape xs -- these go right to left, so maybe don't fuse as well
-    iterationShape (Permute f xs g ys    )  = iterationShape ys
-    iterationShape (Backpermute e f xs   )  = iterationShape xs
-    iterationShape  Stencil{}               = Nothing -- TODO
-    iterationShape  Stencil2{}              = Nothing -- TODO

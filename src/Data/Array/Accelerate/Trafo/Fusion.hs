@@ -15,6 +15,7 @@
 {-# LANGUAGE ViewPatterns         #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-patterns #-}
 {-# OPTIONS_GHC -fno-warn-name-shadowing      #-}
+{-# OPTIONS_GHC -fno-warn-unused-imports      #-} --for ghcid on newfusion
 -- |
 -- Module      : Data.Array.Accelerate.Trafo.Fusion
 -- Copyright   : [2012..2019] The Accelerate Team
@@ -49,6 +50,8 @@ module Data.Array.Accelerate.Trafo.Fusion (
 -- standard library
 import Prelude                                          hiding ( exp, until )
 
+-- enemy
+import Data.Array.Accelerate.Trafo.NewFusion --imported for ghcid purposes
 -- friends
 import Data.BitSet
 import Data.Array.Accelerate.AST
