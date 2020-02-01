@@ -51,7 +51,7 @@ module Data.Array.Accelerate.Trafo.Fusion (
 import Prelude                                          hiding ( exp, until )
 
 -- enemy
-import Data.Array.Accelerate.Trafo.NewFusion --imported for ghcid purposes
+import Data.Array.Accelerate.Trafo.NewFusion ()--imported for ghcid purposes
 -- friends
 import Data.BitSet
 import Data.Array.Accelerate.AST
