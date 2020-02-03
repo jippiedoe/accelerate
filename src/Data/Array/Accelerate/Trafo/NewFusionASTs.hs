@@ -7,6 +7,7 @@ module Data.Array.Accelerate.Trafo.NewFusionASTs (
   PreLabelledAcc (..),
   LabelledOpenAcc (..),
   LabelledAcc, 
+  BoundVariable (..),
   GroupedLabelledAcc (..), 
   PreFusedOpenAcc (..),
   FusedOpenAcc,
@@ -74,37 +75,30 @@ data PreLabelledAcc acc aenv a where
               -> acc                aenv' bodyArrs  -- the bound expression scope
               -> PreLabelledAcc acc aenv  bodyArrs
 
-  Avar        :: Idx                aenv (Array sh e)
-              -> PreLabelledAcc acc aenv (Array sh e)
-
--- TODO don't know if this needs a NodeId
-  Apair       :: Idx                aenv as
-              -> Idx                aenv      bs
-              -> PreLabelledAcc acc aenv (as, bs)
-
-  Anil        :: PreLabelledAcc acc aenv ()
+  Variable    :: BoundVariable aenv a
+              -> PreLabelledAcc acc aenv a
 
 -- TODO don't know if this needs a NodeId
   Apply       :: PreOpenAfun acc     aenv (arrs1 -> arrs2)
-              -> Idx                 aenv  arrs1
+              -> BoundVariable       aenv  arrs1
               -> PreLabelledAcc  acc aenv           arrs2
 
   Aforeign    :: (Arrays as, Arrays bs, Foreign asm)
               => asm                       (as -> bs)                 -- The foreign function for a given backend
               -> PreAfun          acc      (ArrRepr as -> ArrRepr bs) -- Fallback implementation(s)
-              -> Idx                  aenv (ArrRepr as)               -- Arguments to the function
+              -> BoundVariable        aenv (ArrRepr as)               -- Arguments to the function
               -> PreLabelledAcc   acc aenv (ArrRepr bs)
 
   Acond       :: NodeId
               -> PreExp         acc aenv Bool
-              -> Idx                aenv arrs
-              -> Idx                aenv arrs
+              -> BoundVariable      aenv arrs
+              -> BoundVariable      aenv arrs
               -> PreLabelledAcc acc aenv arrs
 
   Awhile      :: NodeId
               -> PreOpenAfun     acc aenv (arrs -> Scalar Bool)     -- continue iteration while true
               -> PreOpenAfun     acc aenv (arrs -> arrs)            -- function to iterate
-              -> Idx                 aenv arrs                      -- initial value
+              -> BoundVariable       aenv arrs                      -- initial value
               -> PreLabelledAcc  acc aenv arrs
 
   Use         :: (Shape sh, Elt e)
@@ -120,7 +114,7 @@ data PreLabelledAcc acc aenv a where
   Reshape     :: (Shape sh, Shape sh', Elt e)
               => NodeId
               -> PreExp     acc aenv sh                         -- new shape
-              -> Idx            aenv (Array sh' e)              -- array to be reshaped
+              -> BoundVariable  aenv (Array sh' e)              -- array to be reshaped
               -> PreLabelledAcc acc aenv (Array sh e)
 
   Generate    :: (Shape sh, Elt e)
@@ -138,121 +132,147 @@ data PreLabelledAcc acc aenv a where
                             (EltRepr sl)
                             co
                             (EltRepr sh)
-              -> Idx                aenv (Array sh e)               -- array to be indexed
+              -> BoundVariable      aenv (Array sh e)               -- array to be indexed
               -> PreExp         acc aenv slix                       -- slice value specification
               -> PreLabelledAcc acc aenv (Array sl e)
 
   Map         :: (Shape sh, Elt e, Elt e')
               => NodeId
               -> PreFun         acc aenv (e -> e')
-              -> Idx                aenv (Array sh e)
+              -> BoundVariable      aenv (Array sh e)
               -> PreLabelledAcc acc aenv (Array sh e')
 
   ZipWith     :: (Shape sh, Elt e1, Elt e2, Elt e3)
               => NodeId
               -> PreFun         acc aenv (e1 -> e2 -> e3)
-              -> Idx                aenv (Array sh e1)
-              -> Idx                aenv (Array sh e2)
+              -> BoundVariable      aenv (Array sh e1)
+              -> BoundVariable      aenv (Array sh e2)
               -> PreLabelledAcc acc aenv (Array sh e3)
 
   Fold        :: (Shape sh, Elt e)
               => NodeId
               -> PreFun     acc aenv (e -> e -> e)              -- combination function
               -> PreExp     acc aenv e                          -- default value
-              -> Idx            aenv (Array (sh:.Int) e)        -- folded array
+              -> BoundVariable  aenv (Array (sh:.Int) e)        -- folded array
               -> PreLabelledAcc acc aenv (Array sh e)
 
   Fold1       :: (Shape sh, Elt e)
               => NodeId
               -> PreFun     acc aenv (e -> e -> e)              -- combination function
-              -> Idx            aenv (Array (sh:.Int) e)        -- folded array
+              -> BoundVariable  aenv (Array (sh:.Int) e)        -- folded array
               -> PreLabelledAcc acc aenv (Array sh e)
 
   FoldSeg     :: (Shape sh, Elt e, Elt i, IsIntegral i)
               => NodeId
               -> PreFun     acc aenv (e -> e -> e)              -- combination function
               -> PreExp     acc aenv e                          -- default value
-              -> Idx            aenv (Array (sh:.Int) e)        -- folded array
-              -> Idx            aenv (Segments i)               -- segment descriptor
+              -> BoundVariable  aenv (Array (sh:.Int) e)        -- folded array
+              -> BoundVariable  aenv (Segments i)               -- segment descriptor
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Fold1Seg    :: (Shape sh, Elt e, Elt i, IsIntegral i)
               => NodeId
               -> PreFun     acc aenv (e -> e -> e)              -- combination function
-              -> Idx            aenv (Array (sh:.Int) e)        -- folded array
-              -> Idx            aenv (Segments i)               -- segment descriptor
+              -> BoundVariable  aenv (Array (sh:.Int) e)        -- folded array
+              -> BoundVariable  aenv (Segments i)               -- segment descriptor
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Scanl       :: (Shape sh, Elt e)
               => NodeId
               -> PreFun     acc aenv (e -> e -> e)              -- combination function
               -> PreExp     acc aenv e                          -- initial value
-              -> Idx            aenv (Array (sh:.Int) e)
+              -> BoundVariable  aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Scanl'      :: (Shape sh, Elt e)
               => NodeId
               -> PreFun     acc aenv (e -> e -> e)              -- combination function
               -> PreExp     acc aenv e                          -- initial value
-              -> Idx            aenv (Array (sh:.Int) e)
+              -> BoundVariable  aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (ArrRepr (Array (sh:.Int) e, Array sh e))
 
   Scanl1      :: (Shape sh, Elt e)
               => NodeId
               -> PreFun     acc aenv (e -> e -> e)              -- combination function
-              -> Idx            aenv (Array (sh:.Int) e)
+              -> BoundVariable  aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Scanr       :: (Shape sh, Elt e)
               => NodeId
               -> PreFun     acc aenv (e -> e -> e)              -- combination function
               -> PreExp     acc aenv e                          -- initial value
-              -> Idx            aenv (Array (sh:.Int) e)
+              -> BoundVariable  aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Scanr'      :: (Shape sh, Elt e)
               => NodeId
               -> PreFun     acc aenv (e -> e -> e)              -- combination function
               -> PreExp     acc aenv e                          -- initial value
-              -> Idx            aenv (Array (sh:.Int) e)
+              -> BoundVariable  aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (ArrRepr (Array (sh:.Int) e, Array sh e))
 
   Scanr1      :: (Shape sh, Elt e)
               => NodeId
               -> PreFun     acc aenv (e -> e -> e)              -- combination function
-              -> Idx            aenv (Array (sh:.Int) e)
+              -> BoundVariable  aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Permute     :: (Shape sh, Shape sh', Elt e)
               => NodeId
               -> PreFun     acc aenv (e -> e -> e)              -- combination function
-              -> Idx            aenv (Array sh' e)              -- default values
+              -> BoundVariable  aenv (Array sh' e)              -- default values
               -> PreFun     acc aenv (sh -> sh')                -- permutation function
-              -> Idx            aenv (Array sh e)               -- source array
+              -> BoundVariable  aenv (Array sh e)               -- source array
               -> PreLabelledAcc acc aenv (Array sh' e)
 
   Backpermute :: (Shape sh, Shape sh', Elt e)
               => NodeId
               -> PreExp     acc aenv sh'                        -- dimensions of the result
               -> PreFun     acc aenv (sh' -> sh)                -- permutation function
-              -> Idx            aenv (Array sh e)               -- source array
+              -> BoundVariable  aenv (Array sh e)               -- source array
               -> PreLabelledAcc acc aenv (Array sh' e)
 
   Stencil     :: (Elt e, Elt e', Stencil sh e stencil)
               => NodeId
               -> PreFun      acc aenv (stencil -> e')           -- stencil function
               -> PreBoundary acc aenv (Array sh e)              -- boundary condition
-              -> Idx             aenv (Array sh e)              -- source array
+              -> BoundVariable   aenv (Array sh e)              -- source array
               -> PreLabelledAcc  acc aenv (Array sh e')
 
   Stencil2    :: (Elt a, Elt b, Elt c, Stencil sh a stencil1, Stencil sh b stencil2)
               => NodeId
               -> PreFun      acc aenv (stencil1 -> stencil2 -> c) -- stencil function
               -> PreBoundary acc aenv (Array sh a)                -- boundary condition #1
-              -> Idx             aenv (Array sh a)                -- source array #1
+              -> BoundVariable   aenv (Array sh a)                -- source array #1
               -> PreBoundary acc aenv (Array sh b)                -- boundary condition #2
-              -> Idx             aenv (Array sh b)                -- source array #2
+              -> BoundVariable   aenv (Array sh b)                -- source array #2
               -> PreLabelledAcc acc  aenv (Array sh c)
+
+-- used to bind variables in PreLabelledAcc
+data BoundVariable env a where
+  Avar        :: Idx           env (Array sh e)
+              -> BoundVariable env (Array sh e)
+
+  Apair       :: BoundVariable env as
+              -> BoundVariable env      bs
+              -> BoundVariable env (as, bs)
+
+  Anil        :: BoundVariable env ()
+
+{-
+
+class Bindable a where
+  bind :: PreLabelledAcc acc aenv a -> PreLabelledAcc acc aenv a
+
+instance Bindable () where
+  bind _ = Variable Anil
+
+instance Bindable (Array sh a) where
+  bind x = Alet LeftHandSideArray x $ Variable $ Avar IdxZero
+
+instance (Bindable a, Bindable b) => Bindable (a,b) where
+  bind  = 
+-}
 
 instance HasArraysRepr LabelledOpenAcc where
   arraysRepr (LabelledOpenAcc a) = arraysRepr a

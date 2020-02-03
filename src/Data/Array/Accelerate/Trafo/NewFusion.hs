@@ -1,7 +1,9 @@
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE RankNTypes            #-}
-
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE UndecidableInstances  #-}
+{-# LANGUAGE AllowAmbiguousTypes   #-}
 
 
 module Data.Array.Accelerate.Trafo.NewFusion {- (export list) -} where
@@ -49,27 +51,43 @@ data DirectedAcyclicGraph = DAG
 
 letBindEverythingWith :: AST.OpenAcc aenv a -> State Int (LabelledOpenAcc aenv a)
 letBindEverythingWith (AST.OpenAcc pacc) = LabelledOpenAcc <$> case pacc of
-  AST.Alet lhs acc1 acc2 -> do
+  AST.Alet lhs acc1 acc2 -> do 
     acc1' <- letBindEverythingWith acc1
     acc2' <- letBindEverythingWith acc2
-    return $ Alet lhs acc1' acc2'
+    return $ Alet lhs acc1' acc2' 
 
-  AST.Avar (AST.ArrayVar idx) -> return $ Avar idx
+  AST.Avar (AST.ArrayVar idx) -> return $ Variable $ Avar idx
  
-  {-AST.Apair acc1 acc2 -> do -- Openacc env (as,bs)
+  AST.Apair acc1 acc2 -> do -- Openacc env (as,bs)
     acc1' <- letBindEverythingWith acc1 -- LabelledOpenAcc env as
     acc2' <- letBindEverythingWith acc2 -- LabelledOpenAcc env bs
-    return $ Alet (makelhs acc1') acc1' $ 
-      LabelledOpenAcc $ 
-        Alet (makelhs acc2') acc2' $ 
-          LabelledOpenAcc $ 
-            Apair (SuccIdx ZeroIdx) ZeroIdx
--}
-makelhs :: ArraysR a -> LeftHandSide a env (env, a)
+  {-case (acc1', acc2') of
+      (LabelledOpenAcc (Variable left), LabelledOpenAcc (Variable right)) -> return $ Variable $ Apair left right-}
+    return $ Alet (makelhs $ arraysRepr acc1') acc1' $ LabelledOpenAcc $ Alet (makelhs $ arraysRepr acc2') acc2' $ LabelledOpenAcc $ Variable $ Apair (mkVariable (arraysRepr acc1') ) (mkVariable (arraysRepr acc2') )
+
+ 
+makelhs :: ArraysR a -> LeftHandSide a env (Putinenv a env)
 makelhs arrra = case arrra of
   ArraysRunit -> LeftHandSideWildcard ArraysRunit
   ArraysRarray -> LeftHandSideArray
   ArraysRpair left right -> LeftHandSidePair (makelhs left) (makelhs right)
+
+mkVariable :: ArraysR a -> (BoundVariable (Putinenv a env) a, env :> Putinenv a env)
+mkVariable x = case x of
+  ArraysRunit -> (Anil, id)
+  ArraysRarray -> (Avar ZeroIdx, SuccIdx)
+  (ArraysRpair a b) -> let (mkvarA, mkvarB) = (mkVariable a, mkVariable b) in 
+    (Apair (fst mkvarA) (snd mkvarA <$> fst mkvarB), snd mkvarB . snd mkvarA)
+  where f <$> (Avar x) = f x
+
+
+type family Putinenv a env where
+  Putinenv () env = env
+  Putinenv (Array sh e) env = (env, Array sh e)
+  Putinenv (a,b) env = Putinenv a (Putinenv b env)
+
+
+
 
 {-
 ALet: special case
