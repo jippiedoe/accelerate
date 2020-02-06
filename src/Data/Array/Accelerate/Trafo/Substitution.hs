@@ -9,6 +9,7 @@
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE TypeApplications    #-}
+{-# LANGUAGE LambdaCase          #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.Trafo.Substitution
@@ -42,6 +43,8 @@ import Data.Kind
 import Control.Applicative                              hiding ( Const )
 import Prelude                                          hiding ( exp, seq )
 
+import Data.Array.Accelerate.Trafo.NewFusionASTs        hiding ( PreLabelledAcc(..) )
+import qualified Data.Array.Accelerate.Trafo.NewFusionASTs as F -- for Fusion
 import Data.Array.Accelerate.AST
 import Data.Array.Accelerate.Array.Sugar                ( Elt, Tuple(..), Array )
 import qualified Data.Array.Accelerate.Debug.Stats      as Stats
@@ -635,3 +638,82 @@ rebuildC k v c =
     rebuildT (SnocAtup t s) = SnocAtup <$> (rebuildT t) <*> (rebuildC k v s)
 --}
 
+
+
+
+
+
+
+-----NewFusion ast's---------
+
+instance Rebuildable LabelledOpenAcc where
+  type AccClo LabelledOpenAcc = LabelledOpenAcc
+  {-# INLINEABLE rebuildPartial #-}
+  rebuildPartial x = Stats.substitution "rebuild" $ rebuildLabelledOpenAcc x
+
+{-# INLINEABLE rebuildLabelledOpenAcc #-}
+rebuildLabelledOpenAcc
+    :: (Applicative f, SyntacticAcc fa)
+    => (forall sh e. ArrayVar aenv (Array sh e) -> f (fa LabelledOpenAcc aenv' (Array sh e)))
+    -> LabelledOpenAcc aenv  t
+    -> f (LabelledOpenAcc aenv' t)
+rebuildLabelledOpenAcc av (LabelledOpenAcc acc) = LabelledOpenAcc <$> rebuildPreLabelledAcc rebuildLabelledOpenAcc av acc
+
+{-# INLINEABLE rebuildPreLabelledAcc #-}
+rebuildPreLabelledAcc
+    :: forall f fa acc aenv aenv' t. (Applicative f, SyntacticAcc fa)
+    => RebuildAcc acc
+    -> RebuildAvar f fa acc aenv aenv'
+    -> F.PreLabelledAcc acc aenv  t
+    -> f (F.PreLabelledAcc acc aenv' t)
+rebuildPreLabelledAcc k av acc =
+  case acc of
+    F.Use n a                   -> pure (F.Use n a)
+    F.Alet lhs a b              -> rebuildAletF k av lhs a b
+    F.Variable v                -> F.Variable      <$> potentiallyUnsafeButUseful v
+    F.Apply n f a               -> F.Apply n       <$> rebuildAfun k av f <*> potentiallyUnsafeButUseful a
+    F.Acond n p t e             -> F.Acond n       <$> rebuildPreOpenExp k (pure . IE) av p <*> k av t <*> k av e
+    F.Awhile n p f a            -> F.Awhile n      <$> rebuildAfun k av p <*> rebuildAfun k av f <*> potentiallyUnsafeButUseful a
+    F.Unit n e                  -> F.Unit n        <$> rebuildPreOpenExp k (pure . IE) av e
+    F.Reshape n e a             -> F.Reshape n     <$> rebuildPreOpenExp k (pure . IE) av e <*> potentiallyUnsafeButUseful a
+    F.Generate n e f            -> F.Generate n    <$> rebuildPreOpenExp k (pure . IE) av e <*> rebuildFun k (pure . IE) av f
+    --Transform sh ix f a       ->   Transform    <$> rebuildPreOpenExp k (pure . IE) av sh <*> rebuildFun k (pure . IE) av ix <*> rebuildFun k (pure . IE) av f <*> k av a
+    --Replicate sl slix a       ->   Replicate sl <$> rebuildPreOpenExp k (pure . IE) av slix <*> k av a
+    F.Slice n sl a slix         -> F.Slice n sl    <$> potentiallyUnsafeButUseful a <*> rebuildPreOpenExp k (pure . IE) av slix
+    F.Map n f a                 -> F.Map n         <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
+    F.ZipWith n f a1 a2         -> F.ZipWith n     <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a1 <*> potentiallyUnsafeButUseful a2
+    F.Fold n f z a              -> F.Fold n        <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
+    F.Fold1 n f a               -> F.Fold1 n       <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
+    F.FoldSeg n f z a s         -> F.FoldSeg n     <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a <*> potentiallyUnsafeButUseful s
+    F.Fold1Seg n f a s          -> F.Fold1Seg n    <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a <*> potentiallyUnsafeButUseful s
+    F.Scanl n f z a             -> F.Scanl n       <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
+    F.Scanl' n f z a            -> F.Scanl' n      <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
+    F.Scanl1 n f a              -> F.Scanl1 n      <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
+    F.Scanr n f z a             -> F.Scanr n       <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
+    F.Scanr' n f z a            -> F.Scanr' n      <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
+    F.Scanr1 n f a              -> F.Scanr1 n      <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
+    F.Permute n f1 a1 f2 a2     -> F.Permute n     <$> rebuildFun k (pure . IE) av f1 <*> potentiallyUnsafeButUseful a1 <*> rebuildFun k (pure . IE) av f2 <*> potentiallyUnsafeButUseful a2
+    F.Backpermute n sh f a      -> F.Backpermute n <$> rebuildPreOpenExp k (pure . IE) av sh <*> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
+    F.Stencil n f b a           -> F.Stencil n     <$> rebuildFun k (pure . IE) av f <*> rebuildBoundary k av b  <*> potentiallyUnsafeButUseful a
+    F.Stencil2 n f b1 a1 b2 a2  -> F.Stencil2 n    <$> rebuildFun k (pure . IE) av f <*> rebuildBoundary k av b1 <*> potentiallyUnsafeButUseful a1 <*> rebuildBoundary k av b2 <*> potentiallyUnsafeButUseful a2
+    F.Aforeign n ff afun as     -> F.Aforeign n ff afun <$> potentiallyUnsafeButUseful as
+    where
+      potentiallyUnsafeButUseful :: ArrayVars aenv a -> f (ArrayVars aenv' a)
+      potentiallyUnsafeButUseful ArrayVarsNil = pure ArrayVarsNil
+      potentiallyUnsafeButUseful (ArrayVarsPair l r) = ArrayVarsPair <$> potentiallyUnsafeButUseful l <*> potentiallyUnsafeButUseful r
+      potentiallyUnsafeButUseful (ArrayVarsArray ix@(ArrayVar _)) = (\case Avar y -> ArrayVarsArray y) <$> (accOut <$> av ix)
+
+rebuildAletF
+    :: forall f fa acc aenv1 aenv1' aenv2 bndArrs arrs. (Applicative f, SyntacticAcc fa)
+    => RebuildAcc acc
+    -> RebuildAvar f fa acc aenv1 aenv2
+    -> LeftHandSide bndArrs aenv1 aenv1'
+    -> acc aenv1  bndArrs
+    -> acc aenv1' arrs
+    -> f (F.PreLabelledAcc acc aenv2 arrs)
+rebuildAletF k av lhs1 bind1 body1 = case rebuildLHS lhs1 of
+  Exists lhs2 -> F.Alet lhs2 <$> k av bind1 <*> k (shiftA' lhs1 lhs2 k av) body1
+
+instance Sink LabelledOpenAcc where
+  {-# INLINEABLE weaken #-}
+  weaken k = Stats.substitution "weaken" . rebuildA (rebuildWeakenVar k)

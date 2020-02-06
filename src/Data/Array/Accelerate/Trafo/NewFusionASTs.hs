@@ -1,6 +1,8 @@
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE RankNTypes            #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
 
 module Data.Array.Accelerate.Trafo.NewFusionASTs (
@@ -17,13 +19,12 @@ module Data.Array.Accelerate.Trafo.NewFusionASTs (
   LabelledOpenFun
   ) where
 
-import Data.Array.Accelerate.Trafo.Substitution
+
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Array.Sugar
 import Data.Array.Accelerate.Array.Representation     (SliceIndex(..))
 import Data.Array.Accelerate.AST                      hiding ( PreOpenAcc(..), OpenAcc(..), Acc )
 import qualified Data.Array.Accelerate.AST            as AST
-
 
    
 newtype NodeId = NodeId Int
@@ -39,11 +40,10 @@ data GroupedLabelledAcc aenv a where
 type FusedAcc = FusedOpenAcc ()
 type FusedOpenAcc = PreFusedOpenAcc UnFused
 
-data Fused = Fused
-data UnFused = UnFused
-
 -- The extra parameter 'single' signifies whether the contained acc is fused into a single pass.
 -- This guarantees that the fused tree is consistent with itself.
+data Fused
+data UnFused
 data PreFusedOpenAcc single aenv a where
   RootOfFusionTree      :: PreFusedOpenAcc Fused    aenv a 
                         -> PreFusedOpenAcc UnFused aenv a
@@ -260,10 +260,6 @@ type LabelledOpenFun = PreOpenFun LabelledOpenAcc
 
 
 
-instance Rebuildable LabelledOpenAcc where
-  type AccClo LabelledOpenAcc = LabelledOpenAcc
-
-instance Sink LabelledOpenAcc
 
 instance HasArraysRepr LabelledOpenAcc where
   arraysRepr (LabelledOpenAcc a) = arraysRepr a

@@ -142,33 +142,24 @@ letBindAfun (Abody acc) = Abody <$> letBindAcc acc
 letBindAfun (Alam lhs body) = Alam lhs <$> letBindAfun body
 
 
--- abstracts a very common pattern in 'letBindEverything
+-- abstracts a very common pattern in 'letBindEverything': it let binds something, and embeds some continuation in the right hand side.
 letBind :: AST.OpenAcc env a -> (forall env'. env :> env' -> State Int (ArrayVars env' a) -> State Int (PreLabelledAcc LabelledOpenAcc env' b)) -> State Int (PreLabelledAcc LabelledOpenAcc env b)
 letBind acc cont = do
   acc' <- letBindAcc acc
   case makeLHSBV acc' of
     Exists (LHSBV lhs var) ->
       Alet lhs acc' . LabelledOpenAcc <$> cont (weakenWithLHS lhs) (return var)
-{-
-letBindFun :: PreOpenAfun AST.OpenAcc env a -> (forall env'. LeftHandSide a env env' -> ArrayVars env' a -> State Int (PreLabelledAcc LabelledOpenAcc env' b)) -> State Int (PreLabelledAcc LabelledOpenAcc env b)
-letBindFun acc cont = do
-  acc' <- letBindAfun acc
-  case makeLHSBV acc' of
-    Exists (LHSBV lhs var) ->
-      Alet lhs acc' . LabelledOpenAcc <$> cont lhs var
--}
 
 makeLHSBV :: HasArraysRepr f => f aenv a -> Exists (LHSBoundVar a env)
-makeLHSBV = makeLHSBV' . arraysRepr
-
-makeLHSBV' :: ArraysR a -> Exists (LHSBoundVar a env)
-makeLHSBV' a = case a of
-  ArraysRunit -> Exists $ LHSBV (LeftHandSideWildcard ArraysRunit) ArrayVarsNil
-  ArraysRarray -> Exists $ LHSBV LeftHandSideArray (ArrayVarsArray $ ArrayVar ZeroIdx)
-  ArraysRpair left right -> case makeLHSBV' left of 
-    Exists  (LHSBV leftlhs  leftvar) -> case makeLHSBV' right of
-      Exists (LHSBV rightlhs rightvar) ->
-        Exists $ LHSBV (LeftHandSidePair leftlhs rightlhs) (ArrayVarsPair (weakenWithLHS rightlhs `weaken` leftvar) rightvar)
+makeLHSBV = makeLHSBV' . arraysRepr where
+  makeLHSBV' :: ArraysR a -> Exists (LHSBoundVar a env)
+  makeLHSBV' a = case a of
+    ArraysRunit -> Exists $ LHSBV (LeftHandSideWildcard ArraysRunit) ArrayVarsNil
+    ArraysRarray -> Exists $ LHSBV LeftHandSideArray (ArrayVarsArray $ ArrayVar ZeroIdx)
+    ArraysRpair left right -> case makeLHSBV' left of 
+      Exists  (LHSBV leftlhs  leftvar) -> case makeLHSBV' right of
+        Exists (LHSBV rightlhs rightvar) ->
+          Exists $ LHSBV (LeftHandSidePair leftlhs rightlhs) (ArrayVarsPair (weakenWithLHS rightlhs `weaken` leftvar) rightvar)
 
 data LHSBoundVar a env env' = LHSBV (LeftHandSide a env env') (ArrayVars env' a)
 
