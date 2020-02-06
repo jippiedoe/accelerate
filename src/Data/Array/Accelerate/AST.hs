@@ -846,6 +846,11 @@ instance (Stencil (sh:.Int) a row1,
 class HasArraysRepr f where
   arraysRepr :: f aenv a -> ArraysR a
 
+instance HasArraysRepr ArrayVars where
+  arraysRepr (ArrayVarsArray (ArrayVar _)) = ArraysRarray
+  arraysRepr ArrayVarsNil     = ArraysRunit
+  arraysRepr (ArrayVarsPair l r) = ArraysRpair (arraysRepr l) (arraysRepr r)
+
 instance HasArraysRepr acc => HasArraysRepr (PreOpenAcc acc) where
   arraysRepr (Alet _ _ body)                    = arraysRepr body
   arraysRepr (Avar ArrayVar{})                  = ArraysRarray

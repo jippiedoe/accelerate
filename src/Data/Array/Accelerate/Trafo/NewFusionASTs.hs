@@ -8,7 +8,7 @@ module Data.Array.Accelerate.Trafo.NewFusionASTs (
   PreLabelledAcc (..),
   LabelledOpenAcc (..),
   LabelledAcc, 
-  BoundVariable (..),
+  ArrayVars (..),
   GroupedLabelledAcc (..), 
   PreFusedOpenAcc (..),
   FusedOpenAcc,
@@ -56,8 +56,8 @@ data PreFusedOpenAcc single aenv a where
   
   Vertical              ::
     { lhsV              :: LeftHandSide a aenv benv
-    , inner             :: PreFusedOpenAcc Fused aenv a
-    , outer             :: PreFusedOpenAcc Fused benv b
+    , innerV            :: PreFusedOpenAcc Fused aenv a
+    , outerV            :: PreFusedOpenAcc Fused benv b
     }                   -> PreFusedOpenAcc Fused aenv b
   
   Horizontal            :: 
@@ -79,19 +79,19 @@ data PreLabelledAcc acc aenv a where
               -> acc                aenv' bodyArrs  -- the bound expression scope
               -> PreLabelledAcc acc aenv  bodyArrs
 
-  Variable    :: BoundVariable aenv a
+  Variable    :: ArrayVars aenv a
               -> PreLabelledAcc acc aenv a
 
   Apply       :: NodeId
               -> PreOpenAfun     acc aenv (arrs1 -> arrs2)
-              -> BoundVariable       aenv  arrs1
+              -> ArrayVars       aenv  arrs1
               -> PreLabelledAcc  acc aenv           arrs2
 
   Aforeign    :: (Arrays as, Arrays bs, Foreign asm)
               => NodeId
               -> asm                       (as -> bs)                 -- The foreign function for a given backend
               -> PreAfun          acc      (ArrRepr as -> ArrRepr bs) -- Fallback implementation(s)
-              -> BoundVariable        aenv (ArrRepr as)               -- Arguments to the function
+              -> ArrayVars        aenv (ArrRepr as)               -- Arguments to the function
               -> PreLabelledAcc   acc aenv (ArrRepr bs)
 
   Acond       :: NodeId
@@ -103,7 +103,7 @@ data PreLabelledAcc acc aenv a where
   Awhile      :: NodeId
               -> PreOpenAfun     acc aenv (arrs -> Scalar Bool)     -- continue iteration while true
               -> PreOpenAfun     acc aenv (arrs -> arrs)            -- function to iterate
-              -> BoundVariable       aenv arrs                      -- initial value
+              -> ArrayVars       aenv arrs                      -- initial value
               -> PreLabelledAcc  acc aenv arrs
 
   Use         :: (Shape sh, Elt e)
@@ -119,7 +119,7 @@ data PreLabelledAcc acc aenv a where
   Reshape     :: (Shape sh, Shape sh', Elt e)
               => NodeId
               -> PreExp         acc aenv sh                         -- new shape
-              -> BoundVariable      aenv (Array sh' e)              -- array to be reshaped
+              -> ArrayVars      aenv (Array sh' e)              -- array to be reshaped
               -> PreLabelledAcc acc aenv (Array sh  e)
 
   Generate    :: (Shape sh, Elt e)
@@ -137,143 +137,131 @@ data PreLabelledAcc acc aenv a where
                             (EltRepr sl)
                             co
                             (EltRepr sh)
-              -> BoundVariable      aenv (Array sh e)               -- array to be indexed
+              -> ArrayVars      aenv (Array sh e)               -- array to be indexed
               -> PreExp         acc aenv slix                       -- slice value specification
               -> PreLabelledAcc acc aenv (Array sl e)
 
   Map         :: (Shape sh, Elt e, Elt e')
               => NodeId
               -> PreFun         acc aenv (e -> e')
-              -> BoundVariable      aenv (Array sh e)
+              -> ArrayVars      aenv (Array sh e)
               -> PreLabelledAcc acc aenv (Array sh e')
 
   ZipWith     :: (Shape sh, Elt e1, Elt e2, Elt e3)
               => NodeId
               -> PreFun         acc aenv (e1 -> e2 -> e3)
-              -> BoundVariable      aenv (Array sh e1)
-              -> BoundVariable      aenv (Array sh e2)
+              -> ArrayVars      aenv (Array sh e1)
+              -> ArrayVars      aenv (Array sh e2)
               -> PreLabelledAcc acc aenv (Array sh e3)
 
   Fold        :: (Shape sh, Elt e)
               => NodeId
               -> PreFun         acc aenv (e -> e -> e)              -- combination function
               -> PreExp         acc aenv e                          -- default value
-              -> BoundVariable      aenv (Array (sh:.Int) e)        -- folded array
+              -> ArrayVars      aenv (Array (sh:.Int) e)        -- folded array
               -> PreLabelledAcc acc aenv (Array sh e)
 
   Fold1       :: (Shape sh, Elt e)
               => NodeId
               -> PreFun         acc aenv (e -> e -> e)              -- combination function
-              -> BoundVariable      aenv (Array (sh:.Int) e)        -- folded array
+              -> ArrayVars      aenv (Array (sh:.Int) e)        -- folded array
               -> PreLabelledAcc acc aenv (Array sh e)
 
   FoldSeg     :: (Shape sh, Elt e, Elt i, IsIntegral i)
               => NodeId
               -> PreFun         acc aenv (e -> e -> e)              -- combination function
               -> PreExp         acc aenv e                          -- default value
-              -> BoundVariable      aenv (Array (sh:.Int) e)        -- folded array
-              -> BoundVariable      aenv (Segments i)               -- segment descriptor
+              -> ArrayVars      aenv (Array (sh:.Int) e)        -- folded array
+              -> ArrayVars      aenv (Segments i)               -- segment descriptor
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Fold1Seg    :: (Shape sh, Elt e, Elt i, IsIntegral i)
               => NodeId
               -> PreFun         acc aenv (e -> e -> e)              -- combination function
-              -> BoundVariable      aenv (Array (sh:.Int) e)        -- folded array
-              -> BoundVariable      aenv (Segments i)               -- segment descriptor
+              -> ArrayVars      aenv (Array (sh:.Int) e)        -- folded array
+              -> ArrayVars      aenv (Segments i)               -- segment descriptor
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Scanl       :: (Shape sh, Elt e)
               => NodeId
               -> PreFun         acc aenv (e -> e -> e)              -- combination function
               -> PreExp         acc aenv e                          -- initial value
-              -> BoundVariable      aenv (Array (sh:.Int) e)
+              -> ArrayVars      aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Scanl'      :: (Shape sh, Elt e)
               => NodeId
               -> PreFun         acc aenv (e -> e -> e)              -- combination function
               -> PreExp         acc aenv e                          -- initial value
-              -> BoundVariable      aenv (Array (sh:.Int) e)
+              -> ArrayVars      aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (ArrRepr (Array (sh:.Int) e, Array sh e))
 
   Scanl1      :: (Shape sh, Elt e)
               => NodeId
               -> PreFun         acc aenv (e -> e -> e)              -- combination function
-              -> BoundVariable      aenv (Array (sh:.Int) e)
+              -> ArrayVars      aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Scanr       :: (Shape sh, Elt e)
               => NodeId
               -> PreFun         acc aenv (e -> e -> e)              -- combination function
               -> PreExp         acc aenv e                          -- initial value
-              -> BoundVariable      aenv (Array (sh:.Int) e)
+              -> ArrayVars      aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Scanr'      :: (Shape sh, Elt e)
               => NodeId
               -> PreFun         acc aenv (e -> e -> e)              -- combination function
               -> PreExp         acc aenv e                          -- initial value
-              -> BoundVariable      aenv (Array (sh:.Int) e)
+              -> ArrayVars      aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (ArrRepr (Array (sh:.Int) e, Array sh e))
 
   Scanr1      :: (Shape sh, Elt e)
               => NodeId
               -> PreFun         acc aenv (e -> e -> e)              -- combination function
-              -> BoundVariable      aenv (Array (sh:.Int) e)
+              -> ArrayVars      aenv (Array (sh:.Int) e)
               -> PreLabelledAcc acc aenv (Array (sh:.Int) e)
 
   Permute     :: (Shape sh, Shape sh', Elt e)
               => NodeId
               -> PreFun         acc aenv (e -> e -> e)              -- combination function
-              -> BoundVariable      aenv (Array sh' e)              -- default values
+              -> ArrayVars      aenv (Array sh' e)              -- default values
               -> PreFun         acc aenv (sh -> sh')                -- permutation function
-              -> BoundVariable      aenv (Array sh e)               -- source array
+              -> ArrayVars      aenv (Array sh e)               -- source array
               -> PreLabelledAcc acc aenv (Array sh' e)
 
   Backpermute :: (Shape sh, Shape sh', Elt e)
               => NodeId
               -> PreExp         acc aenv sh'                        -- dimensions of the result
               -> PreFun         acc aenv (sh' -> sh)                -- permutation function
-              -> BoundVariable      aenv (Array sh e)               -- source array
+              -> ArrayVars      aenv (Array sh e)               -- source array
               -> PreLabelledAcc acc aenv (Array sh' e)
 
   Stencil     :: (Elt e, Elt e', Stencil sh e stencil)
               => NodeId
               -> PreFun          acc aenv (stencil -> e')           -- stencil function
               -> PreBoundary     acc aenv (Array sh e)              -- boundary condition
-              -> BoundVariable       aenv (Array sh e)              -- source array
+              -> ArrayVars       aenv (Array sh e)              -- source array
               -> PreLabelledAcc  acc aenv (Array sh e')
 
   Stencil2    :: (Elt a, Elt b, Elt c, Stencil sh a stencil1, Stencil sh b stencil2)
               => NodeId
               -> PreFun         acc aenv (stencil1 -> stencil2 -> c) -- stencil function
               -> PreBoundary    acc aenv (Array sh a)                -- boundary condition #1
-              -> BoundVariable      aenv (Array sh a)                -- source array #1
+              -> ArrayVars      aenv (Array sh a)                -- source array #1
               -> PreBoundary    acc aenv (Array sh b)                -- boundary condition #2
-              -> BoundVariable      aenv (Array sh b)                -- source array #2
+              -> ArrayVars      aenv (Array sh b)                -- source array #2
               -> PreLabelledAcc acc aenv (Array sh c)
 
 -- used to bind variables in PreLabelledAcc
-data BoundVariable env a where
-  Avar        :: ArrayVar      env (Array sh e)
-              -> BoundVariable env (Array sh e)
-
-  Apair       :: BoundVariable env as
-              -> BoundVariable env      bs
-              -> BoundVariable env (as, bs)
-
-  Anil        :: BoundVariable env ()
 
 type LabelledOpenExp = PreOpenExp LabelledOpenAcc
 type LabelledOpenFun = PreOpenFun LabelledOpenAcc
 
+
+
 instance Rebuildable LabelledOpenAcc where
   type AccClo LabelledOpenAcc = LabelledOpenAcc
-
-instance Sink BoundVariable where
-  weaken _  Anil       = Anil
-  weaken k (Avar v)  = Avar $ weaken k v
-  weaken k (Apair v w) = Apair (weaken k v) (weaken k w)
 
 instance Sink LabelledOpenAcc
 
@@ -281,41 +269,36 @@ instance HasArraysRepr LabelledOpenAcc where
   arraysRepr (LabelledOpenAcc a) = arraysRepr a
 
 instance HasArraysRepr acc => HasArraysRepr (PreLabelledAcc acc) where
-  arraysRepr = undefined
-  {-
-  arraysRepr (Alet _ _ body)                    = arraysRepr body
-  arraysRepr (Avar ArrayVar{})                  = ArraysRarray
-  arraysRepr (Apair as bs)                      = ArraysRpair (arraysRepr as) (arraysRepr bs)
-  arraysRepr Anil                               = ArraysRunit
-  arraysRepr (Apply (Alam _ (Abody a)) _)       = arraysRepr a
-  arraysRepr (Apply _ _)                        = error "Tomorrow will arrive, on time"
-  arraysRepr (Aforeign _ (Alam _ (Abody a)) _)  = arraysRepr a
-  arraysRepr (Aforeign _ (Abody _) _)           = error "And what have you got, at the end of the day?"
-  arraysRepr (Aforeign _ (Alam _ (Alam _ _)) _) = error "A bottle of whisky. And a new set of lies."
-  arraysRepr (Acond _ whenTrue _)               = arraysRepr whenTrue
-  arraysRepr (Awhile _ (Alam lhs _) _)          = lhsToArraysR lhs
-  arraysRepr (Awhile _ _ _)                     = error "I want my, I want my MTV!"
-  arraysRepr Use{}                              = ArraysRarray
-  arraysRepr Unit{}                             = ArraysRarray
-  arraysRepr Reshape{}                          = ArraysRarray
-  arraysRepr Generate{}                         = ArraysRarray
---arraysRepr Transform{}                        = ArraysRarray
---arraysRepr Replicate{}                        = ArraysRarray
-  arraysRepr Slice{}                            = ArraysRarray
-  arraysRepr Map{}                              = ArraysRarray
-  arraysRepr ZipWith{}                          = ArraysRarray
-  arraysRepr Fold{}                             = ArraysRarray
-  arraysRepr Fold1{}                            = ArraysRarray
-  arraysRepr FoldSeg{}                          = ArraysRarray
-  arraysRepr Fold1Seg{}                         = ArraysRarray
-  arraysRepr Scanl{}                            = ArraysRarray
-  arraysRepr Scanl'{}                           = arraysRtuple2
-  arraysRepr Scanl1{}                           = ArraysRarray
-  arraysRepr Scanr{}                            = ArraysRarray
-  arraysRepr Scanr'{}                           = arraysRtuple2
-  arraysRepr Scanr1{}                           = ArraysRarray
-  arraysRepr Permute{}                          = ArraysRarray
-  arraysRepr Backpermute{}                      = ArraysRarray
-  arraysRepr Stencil{}                          = ArraysRarray
-  arraysRepr Stencil2{}                         = ArraysRarray
--}
+  arraysRepr (Alet _ _ body)                      = arraysRepr body
+  arraysRepr (Variable x)                         = arraysRepr x
+  arraysRepr (Apply _ (Alam _ (Abody a)) _)       = arraysRepr a
+  arraysRepr Apply{}                              = error "Tomorrow will arrive, on time"
+  arraysRepr (Aforeign _ _ (Alam _ (Abody a)) _)  = arraysRepr a
+  arraysRepr (Aforeign _ _ (Abody _) _)           = error "And what have you got, at the end of the day?"
+  arraysRepr (Aforeign _ _ (Alam _ (Alam _ _)) _) = error "A bottle of whisky. And a new set of lies."
+  arraysRepr (Acond _ _ whenTrue _)               = arraysRepr whenTrue
+  arraysRepr (Awhile _ _ (Alam lhs _) _)          = lhsToArraysR lhs
+  arraysRepr Awhile{}                             = error "I want my, I want my MTV!"
+  arraysRepr Use{}                                = ArraysRarray
+  arraysRepr Unit{}                               = ArraysRarray
+  arraysRepr Reshape{}                            = ArraysRarray
+  arraysRepr Generate{}                           = ArraysRarray
+--arraysRepr Transform{}                          = ArraysRarray
+--arraysRepr Replicate{}                          = ArraysRarray
+  arraysRepr Slice{}                              = ArraysRarray
+  arraysRepr Map{}                                = ArraysRarray
+  arraysRepr ZipWith{}                            = ArraysRarray
+  arraysRepr Fold{}                               = ArraysRarray
+  arraysRepr Fold1{}                              = ArraysRarray
+  arraysRepr FoldSeg{}                            = ArraysRarray
+  arraysRepr Fold1Seg{}                           = ArraysRarray
+  arraysRepr Scanl{}                              = ArraysRarray
+  arraysRepr Scanl'{}                             = arraysRtuple2
+  arraysRepr Scanl1{}                             = ArraysRarray
+  arraysRepr Scanr{}                              = ArraysRarray
+  arraysRepr Scanr'{}                             = arraysRtuple2
+  arraysRepr Scanr1{}                             = ArraysRarray
+  arraysRepr Permute{}                            = ArraysRarray
+  arraysRepr Backpermute{}                        = ArraysRarray
+  arraysRepr Stencil{}                            = ArraysRarray
+  arraysRepr Stencil2{}                           = ArraysRarray

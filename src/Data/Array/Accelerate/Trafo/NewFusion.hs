@@ -49,185 +49,92 @@ data DirectedAcyclicGraph = DAG
 
 letBindAcc :: AST.OpenAcc aenv a -> State Int (LabelledOpenAcc aenv a)
 letBindAcc (AST.OpenAcc pacc) = LabelledOpenAcc <$> case pacc of
-  AST.Alet lhs acc1 acc2 -> do
-    acc1' <- letBindAcc acc1
-    acc2' <- letBindAcc acc2
-    return $ Alet lhs acc1' acc2' 
-
-  AST.Avar (AST.ArrayVar idx) -> return $ Variable $ Avar $ ArrayVar idx
- 
-  AST.Apair acc1 acc2 -> letBind acc1 $ \w1 var1 ->
-    letBind (w1 $:> acc2) $ \w2 var2 -> return $
-      Variable $ Apair (w2 $:> var1) var2
-
-  AST.Anil -> return $ Variable Anil
-
-  AST.Apply f acc -> do
-    n <- getInc
-    f' <- letBindAfun f
-    letBind acc $ \w var -> return $
-      Apply n (w $:> f') var
- 
-  AST.Aforeign asm fun acc -> do
-    n <- getInc
-    fun' <- letBindAfun fun
-    letBind acc $ \_ var -> return $ 
-      Aforeign n asm fun' var
-
-  AST.Acond e left right -> do
-    n <- getInc
-    e' <- letBindExp e
-    left'  <- letBindAcc left
-    right' <- letBindAcc right
-    return $ Acond n e' left' right'
-
-  AST.Awhile cond fun acc -> do
-    n <- getInc
-    cond' <- letBindAfun cond
-    fun' <- letBindAfun fun
-    letBind acc $ \w var -> return $ 
-      Awhile n (w $:> cond') (w $:> fun') var
-
-  AST.Use a -> do
-    n <- getInc
-    return $ Use n a
-
-  AST.Unit e -> do
-    n <- getInc
-    e' <- letBindExp e
-    return $ Unit n e'
- 
-  AST.Reshape sh acc -> do
-    n <- getInc
-    sh' <- letBindExp sh
-    letBind acc (\w var -> return $ 
-      Reshape n (w $:> sh') var)
-
-  AST.Generate sh fun -> do
-    n <- getInc
-    sh' <- letBindExp sh
-    fun' <- letBindFun fun
-    return $ Generate n sh' fun'
+  AST.Alet lhs acc1 acc2         -> Alet lhs <$> letBindAcc acc1 <*> letBindAcc acc2
+   
+  AST.Avar (AST.ArrayVar idx)    -> return $ Variable $ ArrayVarsArray $ ArrayVar idx
+    
+  AST.Apair acc1 acc2            -> letBind acc1 $ \w1 var1 -> letBind (weaken w1 acc2) $ \w2 var2 ->
+                                    Variable <$> (ArrayVarsPair <$> w2 $:> var1 <*> var2)
+   
+  AST.Anil                       -> return $ Variable ArrayVarsNil
+   
+  AST.Apply f acc                -> letBind acc $ \w var -> 
+                                    Apply <$> getInc <*> w $:> letBindAfun f <*> var
+    
+  AST.Aforeign asm fun acc       -> letBind acc $ \_ var -> 
+                                    Aforeign <$> getInc <*> return asm <*> letBindAfun fun <*> var
+   
+  AST.Acond e left right         -> Acond <$> getInc <*> letBindExp e <*> letBindAcc left <*> letBindAcc right
+   
+  AST.Awhile cond fun acc        -> letBind acc $ \w var ->
+                                    Awhile <$> getInc <*> w $:> letBindAfun cond <*> w $:> letBindAfun fun <*> var
+   
+  AST.Use a                      -> (`Use` a) <$> getInc
+   
+  AST.Unit e                     -> Unit <$> getInc <*> letBindExp e
+    
+  AST.Reshape sh acc             -> letBind acc $ \w var ->
+                                    Reshape <$> getInc <*> w $:> letBindExp sh <*> var
+   
+  AST.Generate sh fun            -> Generate <$> getInc <*> letBindExp sh <*> letBindFun fun
 
 -- TODO do these need to exist?
-  AST.Transform{} -> undefined
-  AST.Replicate{} -> undefined
+  AST.Transform{}                -> undefined
+  AST.Replicate{}                -> undefined
+   
+  AST.Slice slidx acc e          -> letBind acc $ \w var ->
+                                    Slice <$> getInc <*> return slidx <*> var <*> w $:> letBindExp e
+       
+  AST.Map f acc                  -> letBind acc $ \w var ->
+                                    Map <$> getInc <*> w $:> letBindFun f <*> var
+      
+  AST.ZipWith f acc1 acc2        -> letBind acc1 $ \w1 var1 -> letBind (weaken w1 acc2) $ \w2 var2 ->
+                                    ZipWith <$> getInc <*> w2 . w1 $:> letBindFun f <*> w2 $:> var1 <*> var2
+   
+  AST.Fold f e acc               -> letBind acc $ \w var ->
+                                    Fold <$> getInc <*> w $:>letBindFun f <*> w $:>letBindExp e <*> var
+   
+  AST.Fold1 f acc                -> letBind acc $ \w var ->
+                                    Fold1 <$> getInc <*> w $:>letBindFun f <*> var
+   
+  AST.FoldSeg  f e acc seg       -> letBind acc $ \w1 var1 -> letBind (weaken w1 seg) $ \w2 var2 ->
+                                    FoldSeg <$> getInc <*> w2 . w1 $:> letBindFun f 
+                                    <*> w2 . w1 $:> letBindExp e <*> w2 $:> var1 <*> var2
+   
+  AST.Fold1Seg f   acc seg       -> letBind acc $ \w1 var1 -> letBind (weaken w1 seg) $ \w2 var2 ->
+                                    Fold1Seg <$> getInc <*> w2 . w1 $:> letBindFun f <*> w2 $:> var1 <*> var2
+   
+  AST.Scanl f e acc              -> letBind acc $ \w var ->
+                                    Scanl <$> getInc <*> w $:> letBindFun f <*> w $:> letBindExp e <*> var
+       
+  AST.Scanl' f e acc             -> letBind acc $ \w var ->
+                                    Scanl' <$> getInc <*> w $:> letBindFun f <*> w $:> letBindExp e <*> var
+   
+  AST.Scanl1 f acc               -> letBind acc $ \w var ->
+                                    Scanl1 <$> getInc <*> w $:> letBindFun f <*> var
+   
+  AST.Scanr f e acc              -> letBind acc $ \w var ->
+                                    Scanr <$> getInc <*> w $:> letBindFun f <*> w $:> letBindExp e <*> var
+       
+  AST.Scanr' f e acc             -> letBind acc $ \w var ->
+                                    Scanr' <$> getInc <*> w $:> letBindFun f <*> w $:> letBindExp e <*> var
+   
+  AST.Scanr1 f acc               -> letBind acc $ \w var ->
+                                    Scanr1 <$> getInc <*> w $:> letBindFun f <*> var
+   
+  AST.Permute f acc1 g acc2      -> letBind acc1 $ \w1 var1 -> letBind (weaken w1 acc2) $ \w2 var2 ->
+                                    Permute <$> getInc <*> w2 . w1 $:> letBindFun f <*> w2 $:> var1 
+                                                       <*> w2 . w1 $:> letBindFun g <*>        var2
+       
+  AST.Backpermute e f acc        -> letBind acc $ \w var ->
+                                    Backpermute <$> getInc <*> w $:> letBindExp e <*> w $:> letBindFun f <*> var
+   
+  AST.Stencil f b acc            -> letBind acc $ \w var ->
+                                    Stencil <$> getInc <*> w $:> letBindFun f <*> w $:> letBindBoundary b <*> var
 
-  AST.Slice slidx acc e -> do
-    n <- getInc
-    e' <- letBindExp e
-    letBind acc (\w var -> return $ 
-      Slice n slidx var (w $:> e'))
-
-  AST.Map f acc -> do
-    n <- getInc
-    f' <- letBindFun f
-    letBind acc $ \w var -> return $ 
-      Map n (w $:> f') var
-
-  AST.ZipWith f acc1 acc2 -> do
-    n <- getInc
-    f' <- letBindFun f
-    letBind acc1 $ \w1 var1 ->
-      letBind (w1 $:> acc2) $ \w2 var2 -> return $ 
-        ZipWith n (w2 . w1 $:> f') (w2 $:> var1) var2
-
-  AST.Fold f e acc -> do
-    n <- getInc
-    f' <- letBindFun f
-    e' <- letBindExp e
-    letBind acc $ \w var -> return $
-      Fold n (w $:> f') (w $:> e') var
-
-  AST.Fold1 f acc -> do
-    n <- getInc
-    f' <- letBindFun f
-    letBind acc $ \w var -> return $ 
-      Fold1 n (w $:> f') var
-
-  AST.FoldSeg f e acc seg -> do
-    n <- getInc
-    f' <- letBindFun f
-    e' <- letBindExp e
-    letBind acc $ \w1 var1 -> 
-      letBind (w1 $:> seg) $ \w2 var2 -> return $ 
-        FoldSeg n (w2 . w1 $:> f') (w2 . w1 $:> e') (w2 $:> var1) var2
-
-  AST.Fold1Seg f acc seg -> do
-    n <- getInc
-    f' <- letBindFun f
-    letBind acc $ \w1 var1 -> 
-      letBind (w1 $:> seg) $ \w2 var2 ->
-        return $ Fold1Seg n (w2 . w1 $:> f') (w2 $:> var1) var2
-
-  AST.Scanl f e acc -> do
-    n <- getInc
-    f' <- letBindFun f
-    e' <- letBindExp e
-    letBind acc $ \w var -> return $
-      Scanl n (w $:> f') (w $:> e') var
-    
-  AST.Scanl' f e acc -> do
-    n <- getInc
-    f' <- letBindFun f
-    e' <- letBindExp e
-    letBind acc $ \w var -> return $
-      Scanl' n (w $:> f') (w $:> e') var
-
-  AST.Scanl1 f acc -> do
-    n <- getInc
-    f' <- letBindFun f
-    letBind acc $ \w var -> return $
-      Scanl1 n (w $:> f') var
-
-  AST.Scanr f e acc -> do
-    n <- getInc
-    f' <- letBindFun f
-    e' <- letBindExp e
-    letBind acc $ \w var -> return $
-      Scanr n (w $:> f') (w $:> e') var
-    
-  AST.Scanr' f e acc -> do
-    n <- getInc
-    f' <- letBindFun f
-    e' <- letBindExp e
-    letBind acc $ \w var -> return $
-      Scanr' n (w $:> f') (w $:> e') var
-
-  AST.Scanr1 f acc -> do
-    n <- getInc
-    f' <- letBindFun f
-    letBind acc $ \w var -> return $
-      Scanr1 n (w $:> f') var
-
-  AST.Permute f acc1 g acc2 -> do
-    n <- getInc
-    f' <- letBindFun f
-    g' <- letBindFun g
-    letBind acc1 $ \w1 var1 -> letBind (w1 $:> acc2) $ \w2 var2 -> return $
-      Permute n (w2 . w1 $:> f') (w2 $:> var1) (w2 . w1 $:> g') var2
-
-  AST.Backpermute e f acc -> do
-    n <- getInc
-    e' <- letBindExp e
-    f' <- letBindFun f
-    letBind acc $ \w var -> return $
-      Backpermute n (w $:> e') (w $:> f') var
-
-  AST.Stencil f b acc -> do
-    n <- getInc
-    f' <- letBindFun f
-    b' <- letBindBoundary b
-    letBind acc $ \w var -> return $
-      Stencil n (w $:> f') (w $:> b') var
-
-  AST.Stencil2 f b1 acc1 b2 acc2 -> do
-    n <- getInc
-    f' <- letBindFun f
-    b1' <- letBindBoundary b1
-    b2' <- letBindBoundary b2
-    letBind acc1 $ \w1 var1 -> letBind (w1 $:> acc2) $ \w2 var2 -> return $
-      Stencil2 n (w2 . w1 $:> f') (w2 . w1 $:> b1') (w2 $:> var1) (w2 . w1 $:> b2') var2
+  AST.Stencil2 f b1 acc1 b2 acc2 -> letBind acc1 $ \w1 var1 -> letBind (weaken w1 acc2) $ \w2 var2 ->
+                                    Stencil2 <$> getInc <*> w2 . w1 $:> letBindFun f <*> w2 . w1 $:> letBindBoundary b1 
+                                    <*> w2 $:> var1 <*> w2 . w1 $:> letBindBoundary b2 <*> var2
 
 
 letBindAfun :: PreOpenAfun OpenAcc aenv a -> State Int (PreOpenAfun LabelledOpenAcc aenv a)
@@ -236,14 +143,14 @@ letBindAfun (Alam lhs body) = Alam lhs <$> letBindAfun body
 
 
 -- abstracts a very common pattern in 'letBindEverything
-letBind :: AST.OpenAcc env a -> (forall env'. env :> env' -> BoundVariable env' a -> State Int (PreLabelledAcc LabelledOpenAcc env' b)) -> State Int (PreLabelledAcc LabelledOpenAcc env b)
+letBind :: AST.OpenAcc env a -> (forall env'. env :> env' -> State Int (ArrayVars env' a) -> State Int (PreLabelledAcc LabelledOpenAcc env' b)) -> State Int (PreLabelledAcc LabelledOpenAcc env b)
 letBind acc cont = do
   acc' <- letBindAcc acc
   case makeLHSBV acc' of
     Exists (LHSBV lhs var) ->
-      Alet lhs acc' . LabelledOpenAcc <$> cont (weakenWithLHS lhs) var
+      Alet lhs acc' . LabelledOpenAcc <$> cont (weakenWithLHS lhs) (return var)
 {-
-letBindFun :: PreOpenAfun AST.OpenAcc env a -> (forall env'. LeftHandSide a env env' -> BoundVariable env' a -> State Int (PreLabelledAcc LabelledOpenAcc env' b)) -> State Int (PreLabelledAcc LabelledOpenAcc env b)
+letBindFun :: PreOpenAfun AST.OpenAcc env a -> (forall env'. LeftHandSide a env env' -> ArrayVars env' a -> State Int (PreLabelledAcc LabelledOpenAcc env' b)) -> State Int (PreLabelledAcc LabelledOpenAcc env b)
 letBindFun acc cont = do
   acc' <- letBindAfun acc
   case makeLHSBV acc' of
@@ -256,14 +163,14 @@ makeLHSBV = makeLHSBV' . arraysRepr
 
 makeLHSBV' :: ArraysR a -> Exists (LHSBoundVar a env)
 makeLHSBV' a = case a of
-  ArraysRunit -> Exists $ LHSBV (LeftHandSideWildcard ArraysRunit) Anil
-  ArraysRarray -> Exists $ LHSBV LeftHandSideArray (Avar $ ArrayVar ZeroIdx)
+  ArraysRunit -> Exists $ LHSBV (LeftHandSideWildcard ArraysRunit) ArrayVarsNil
+  ArraysRarray -> Exists $ LHSBV LeftHandSideArray (ArrayVarsArray $ ArrayVar ZeroIdx)
   ArraysRpair left right -> case makeLHSBV' left of 
     Exists  (LHSBV leftlhs  leftvar) -> case makeLHSBV' right of
       Exists (LHSBV rightlhs rightvar) ->
-        Exists $ LHSBV (LeftHandSidePair leftlhs rightlhs) (Apair (weakenWithLHS rightlhs `weaken` leftvar) rightvar)
+        Exists $ LHSBV (LeftHandSidePair leftlhs rightlhs) (ArrayVarsPair (weakenWithLHS rightlhs `weaken` leftvar) rightvar)
 
-data LHSBoundVar a env env' = LHSBV (LeftHandSide a env env') (BoundVariable env' a)
+data LHSBoundVar a env env' = LHSBV (LeftHandSide a env env') (ArrayVars env' a)
 
 
 getInc :: State Int NodeId
@@ -366,20 +273,15 @@ letBindBoundary (Function f) = Function <$> letBindFun f
 
 
 
+infix 5 $:>
+($:>) :: (Functor f, Sink s) => env :> env' -> f (s env a) -> f (s env' a)
+w $:> x = weaken w <$> x
 
-
-
-
-
-
-infix 8 $:>
-($:>) :: Sink f => env :> env' -> f env t -> f env' t
-($:>) = weaken
 
 
 {-
 ALet: special case
-AVar, APair, ANil, Apply, AForeign, ACond, AWhile, Use, Unit, Reshape, replicate, slice: ?
+ArrayVarsArray, APair, ArrayVarsNil, Apply, AForeign, ACond, AWhile, Use, Unit, Reshape, replicate, slice: ?
 producers: Generate, transform, map, zipwith (in one or two inputs?): in all directions, with almost anything
 backpermute is a producer, but only if the input is the target shape. It can't vertically happen after non-producers, but can vertically happen before anything.
 Permute is the opposite: fuses vertically after anything, but not before.
