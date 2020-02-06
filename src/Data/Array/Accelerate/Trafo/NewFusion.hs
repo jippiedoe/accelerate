@@ -22,6 +22,7 @@ doFusion acc = fusedacc
     groupedacc = rewriteAST letboundacc partition
     fusedacc = finalizeFusion groupedacc
 
+
 letBindEverything :: AST.Acc a -> LabelledAcc a
 letBindEverything acc = evalState (letBindAcc acc) 1
 
@@ -171,81 +172,37 @@ getInc = modify (+1) >> gets NodeId
 letBindExp :: OpenExp env aenv t -> State Int (LabelledOpenExp env aenv t)
 letBindExp openexp =
   case openexp of
-    Let bnd body            -> do
-      bnd'  <- letBindExp bnd
-      body' <- letBindExp body
-      return $ Let bnd' body'
+    Let bnd body            -> Let <$> letBindExp bnd <*> letBindExp body
     Var ix                  -> return $ Var ix
     Const c                 -> return $ Const c
     Undef                   -> return Undef
     Tuple tup               -> Tuple <$> letBindTup tup
     Prj ix t                -> Prj ix <$> letBindExp t
     IndexNil                -> return IndexNil
-    IndexCons sh sz         -> do
-      sh' <- letBindExp sh
-      sz' <- letBindExp sz
-      return $ IndexCons sh' sz'
+    IndexCons sh sz         -> IndexCons <$> letBindExp sh <*> letBindExp sz
     IndexHead sh            -> IndexHead <$> letBindExp sh
     IndexTail sh            -> IndexTail <$> letBindExp sh
     IndexAny                -> return IndexAny
-    IndexSlice x ix sh      -> do
-      ix' <- letBindExp ix
-      sh' <- letBindExp sh
-      return $ IndexSlice x ix' sh'
-    IndexFull x ix sl       -> do
-      ix' <- letBindExp ix
-      sl' <- letBindExp sl
-      return $ IndexFull x ix' sl'
-    ToIndex sh ix           -> do
-      sh' <- letBindExp sh
-      ix' <- letBindExp ix
-      return $ ToIndex sh' ix'
-    FromIndex sh ix         -> do
-      sh' <- letBindExp sh
-      ix' <- letBindExp ix
-      return $ FromIndex sh' ix'
-    Cond p t e              -> do
-      p' <- letBindExp p
-      t' <- letBindExp t
-      e' <- letBindExp e      
-      return $ Cond p' t' e'
-    While p f x             -> do
-      p' <- letBindFun p
-      f' <- letBindFun f
-      x' <- letBindExp x      
-      return $ While p' f' x'
+    IndexSlice x ix sh      -> IndexSlice x <$> letBindExp ix <*> letBindExp sh
+    IndexFull  x ix sl      -> IndexFull  x <$> letBindExp ix <*> letBindExp sl
+    ToIndex sh ix           -> ToIndex   <$> letBindExp sh <*> letBindExp ix
+    FromIndex sh ix         -> FromIndex <$> letBindExp sh <*> letBindExp ix
+    Cond p t e              -> Cond  <$> letBindExp p <*> letBindExp t <*> letBindExp e
+    While p f x             -> While <$> letBindFun p <*> letBindFun f <*> letBindExp x
     PrimConst c             -> return $ PrimConst c
     PrimApp f x             -> PrimApp f <$> letBindExp x
-    Index a sh              -> do
-      a' <- letBindAcc a
-      sh' <- letBindExp sh
-      return $ Index a' sh'
-    LinearIndex a i         -> do
-      a' <- letBindAcc a
-      i' <- letBindExp i
-      return $ LinearIndex a' i'
+    Index a sh              -> Index <$> letBindAcc a <*> letBindExp sh
+    LinearIndex a i         -> LinearIndex <$> letBindAcc a <*> letBindExp i
     Shape a                 -> Shape <$> letBindAcc a
     ShapeSize sh            -> ShapeSize <$> letBindExp sh
-    Intersect s t           -> do
-      s' <- letBindExp s
-      t' <- letBindExp t
-      return $ Intersect s' t'
-    Union s t               -> do
-      s' <- letBindExp s
-      t' <- letBindExp t
-      return $ Union s' t'
-    Foreign ff f e          -> do
-      f' <- letBindFun f
-      e' <- letBindExp e
-      return $ Foreign ff f' e'
+    Intersect s t           -> Intersect <$> letBindExp s <*> letBindExp t
+    Union s t               -> Union <$> letBindExp s <*> letBindExp t
+    Foreign ff f e          -> Foreign ff <$> letBindFun f <*> letBindExp e
     Coerce e                -> Coerce <$> letBindExp e
   where
     letBindTup :: Tuple (OpenExp env aenv) t -> State Int (Tuple (LabelledOpenExp env aenv) t)
     letBindTup NilTup        = return NilTup
-    letBindTup (SnocTup t e) = do
-      e' <- letBindExp e
-      t' <- letBindTup t 
-      return $ SnocTup t' e'
+    letBindTup (SnocTup t e) = SnocTup <$> letBindTup t <*> letBindExp e
 
 
 letBindFun :: OpenFun env aenv f -> State Int (LabelledOpenFun env aenv f)
@@ -264,7 +221,7 @@ letBindBoundary (Function f) = Function <$> letBindFun f
 
 
 
-infix 5 $:>
+infix 5 $:> -- Just an operator which makes letBindAcc a bit more concise. The priority is purposely between (.) and (<$>)/(<*>)
 ($:>) :: (Functor f, Sink s) => env :> env' -> f (s env a) -> f (s env' a)
 w $:> x = weaken w <$> x
 
