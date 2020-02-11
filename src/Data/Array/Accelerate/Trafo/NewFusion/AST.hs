@@ -1,11 +1,9 @@
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE TypeOperators         #-}
-{-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE RankNTypes            #-}
-{-# LANGUAGE OverloadedStrings   #-}
 
 
-module Data.Array.Accelerate.Trafo.NewFusionASTs (
+module Data.Array.Accelerate.Trafo.NewFusion.AST (
   NodeId (..), 
   PreLabelledAcc (..),
   LabelledOpenAcc (..),
@@ -72,7 +70,7 @@ data PreFusedOpenAcc single aenv a where
     }                   -> PreFusedOpenAcc Fused aenv (a,b) 
 
 
---TODO think about exp, functions, functions on exp, etc
+
 data PreLabelledAcc acc aenv a where
   Alet        :: LeftHandSide bndArrs aenv aenv'
               -> acc                aenv  bndArrs   -- bound expression

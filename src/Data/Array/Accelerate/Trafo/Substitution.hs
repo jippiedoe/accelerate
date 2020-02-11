@@ -43,8 +43,8 @@ import Data.Kind
 import Control.Applicative                              hiding ( Const )
 import Prelude                                          hiding ( exp, seq )
 
-import Data.Array.Accelerate.Trafo.NewFusionASTs        hiding ( PreLabelledAcc(..) )
-import qualified Data.Array.Accelerate.Trafo.NewFusionASTs as F -- for Fusion
+import Data.Array.Accelerate.Trafo.NewFusion.AST        hiding ( PreLabelledAcc(..) )
+import qualified Data.Array.Accelerate.Trafo.NewFusion.AST as F -- for Fusion
 import Data.Array.Accelerate.AST
 import Data.Array.Accelerate.Array.Sugar                ( Elt, Tuple(..), Array )
 import qualified Data.Array.Accelerate.Debug.Stats      as Stats
@@ -701,7 +701,8 @@ rebuildPreLabelledAcc k av acc =
       potentiallyUnsafeButUseful :: ArrayVars aenv a -> f (ArrayVars aenv' a)
       potentiallyUnsafeButUseful ArrayVarsNil = pure ArrayVarsNil
       potentiallyUnsafeButUseful (ArrayVarsPair l r) = ArrayVarsPair <$> potentiallyUnsafeButUseful l <*> potentiallyUnsafeButUseful r
-      potentiallyUnsafeButUseful (ArrayVarsArray ix@(ArrayVar _)) = (\case Avar y -> ArrayVarsArray y) <$> (accOut <$> av ix)
+      potentiallyUnsafeButUseful (ArrayVarsArray ix@(ArrayVar _)) = (\case Avar y -> ArrayVarsArray y
+                                                                           _      -> error "unsafeSubstitution failed") <$> (accOut <$> av ix)
 
 rebuildAletF
     :: forall f fa acc aenv1 aenv1' aenv2 bndArrs arrs. (Applicative f, SyntacticAcc fa)
