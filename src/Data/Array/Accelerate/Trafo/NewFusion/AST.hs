@@ -25,7 +25,7 @@ import Data.Array.Accelerate.AST                      hiding ( PreOpenAcc(..), O
 import qualified Data.Array.Accelerate.AST            as AST
 
    
-newtype NodeId = NodeId Int
+newtype NodeId = NodeId Int deriving (Eq, Show)
 
 type LabelledAcc = LabelledOpenAcc ()
 newtype LabelledOpenAcc aenv a = LabelledOpenAcc (PreLabelledAcc LabelledOpenAcc aenv a)
@@ -73,23 +73,24 @@ data PreFusedOpenAcc single aenv a where
 
 data PreLabelledAcc acc aenv a where
   Alet        :: LeftHandSide bndArrs aenv aenv'
-              -> acc                aenv  bndArrs   -- bound expression
-              -> acc                aenv' bodyArrs  -- the bound expression scope
-              -> PreLabelledAcc acc aenv  bodyArrs
+              -> acc                  aenv  bndArrs   -- bound expression
+              -> acc                  aenv' bodyArrs  -- the bound expression scope
+              -> PreLabelledAcc   acc aenv  bodyArrs
 
-  Variable    :: ArrayVars aenv a
+  Variable    :: NodeId
+              -> ArrayVars          aenv a
               -> PreLabelledAcc acc aenv a
 
   Apply       :: NodeId
               -> PreOpenAfun     acc aenv (arrs1 -> arrs2)
-              -> ArrayVars       aenv  arrs1
+              -> ArrayVars           aenv  arrs1
               -> PreLabelledAcc  acc aenv           arrs2
 
   Aforeign    :: (Arrays as, Arrays bs, Foreign asm)
               => NodeId
               -> asm                       (as -> bs)                 -- The foreign function for a given backend
               -> PreAfun          acc      (ArrRepr as -> ArrRepr bs) -- Fallback implementation(s)
-              -> ArrayVars        aenv (ArrRepr as)               -- Arguments to the function
+              -> ArrayVars            aenv (ArrRepr as)               -- Arguments to the function
               -> PreLabelledAcc   acc aenv (ArrRepr bs)
 
   Acond       :: NodeId
@@ -101,7 +102,7 @@ data PreLabelledAcc acc aenv a where
   Awhile      :: NodeId
               -> PreOpenAfun     acc aenv (arrs -> Scalar Bool)     -- continue iteration while true
               -> PreOpenAfun     acc aenv (arrs -> arrs)            -- function to iterate
-              -> ArrayVars       aenv arrs                      -- initial value
+              -> ArrayVars           aenv arrs                      -- initial value
               -> PreLabelledAcc  acc aenv arrs
 
   Use         :: (Shape sh, Elt e)
@@ -264,7 +265,7 @@ instance HasArraysRepr LabelledOpenAcc where
 
 instance HasArraysRepr acc => HasArraysRepr (PreLabelledAcc acc) where
   arraysRepr (Alet _ _ body)                      = arraysRepr body
-  arraysRepr (Variable x)                         = arraysRepr x
+  arraysRepr (Variable _ x)                         = arraysRepr x
   arraysRepr (Apply _ (Alam _ (Abody a)) _)       = arraysRepr a
   arraysRepr Apply{}                              = error "Tomorrow will arrive, on time"
   arraysRepr (Aforeign _ _ (Alam _ (Abody a)) _)  = arraysRepr a

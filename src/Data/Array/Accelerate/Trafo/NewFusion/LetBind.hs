@@ -15,10 +15,10 @@ import qualified Data.Array.Accelerate.AST    as AST
 letBindAcc :: AST.OpenAcc aenv a -> State Int (LabelledOpenAcc aenv a)
 letBindAcc (AST.OpenAcc pacc) = LabelledOpenAcc <$> case pacc of
   AST.Alet lhs acc1 acc2         -> Alet lhs <$> letBindAcc acc1 <*> letBindAcc acc2
-  AST.Avar (AST.ArrayVar idx)    -> return $ Variable $ ArrayVarsArray $ ArrayVar idx
+  AST.Avar (ArrayVar idx)        -> (`Variable` (ArrayVarsArray $ ArrayVar idx)) <$> getInc
   AST.Apair acc1 acc2            -> letBind acc1 $ \w1 var1 -> letBind (weaken w1 acc2) $ \w2 var2 ->
-                                    Variable <$> (ArrayVarsPair <$> w2 $:> var1 <*> var2)
-  AST.Anil                       -> return $ Variable ArrayVarsNil
+                                    Variable <$> getInc <*> (ArrayVarsPair <$> w2 $:> var1 <*> var2)
+  AST.Anil                       -> (`Variable` ArrayVarsNil) <$> getInc
   AST.Apply f acc                -> letBind acc $ \w var -> 
                                     Apply <$> getInc <*> w $:> letBindAfun f <*> var
   AST.Aforeign asm fun acc       -> letBind acc $ \_ var -> 

@@ -296,6 +296,7 @@ Library
         , unique
         , unordered-containers          >= 0.2
         , vector                        >= 0.10
+        , glpk-hs                       >= 0.7.1
 
   Exposed-modules:
         -- The core language and reference implementation

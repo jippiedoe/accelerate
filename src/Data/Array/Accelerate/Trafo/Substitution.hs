@@ -670,7 +670,7 @@ rebuildPreLabelledAcc k av acc =
   case acc of
     F.Use n a                   -> pure (F.Use n a)
     F.Alet lhs a b              -> rebuildAletF k av lhs a b
-    F.Variable v                -> F.Variable      <$> potentiallyUnsafeButUseful v
+    F.Variable n v              -> F.Variable n    <$> potentiallyUnsafeButUseful v
     F.Apply n f a               -> F.Apply n       <$> rebuildAfun k av f <*> potentiallyUnsafeButUseful a
     F.Acond n p t e             -> F.Acond n       <$> rebuildPreOpenExp k (pure . IE) av p <*> k av t <*> k av e
     F.Awhile n p f a            -> F.Awhile n      <$> rebuildAfun k av p <*> rebuildAfun k av f <*> potentiallyUnsafeButUseful a
