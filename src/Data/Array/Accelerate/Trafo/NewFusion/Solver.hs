@@ -1,20 +1,24 @@
 {-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE TupleSections         #-}
 
 module Data.Array.Accelerate.Trafo.NewFusion.Solver {- (export list) -} where
 
-import Data.Array.Accelerate.Trafo.NewFusion.AST
+import Data.Array.Accelerate.Trafo.NewFusion.AST hiding (PreFusedOpenAcc(..))
 import Data.Array.Accelerate.AST hiding (PreOpenAcc(..))
 import Data.Bifunctor
+import qualified Data.IntMap.Strict as IM
+import qualified Data.Map.Strict as M
+import Control.Monad.LPMonad
+import Data.LinearProgram
 
+{-
 data DirectedAcyclicGraph = DAG 
   { nodes :: [(NodeId, NodeType)]
   , deps :: [(NodeId, NodeId)] -- the nodes with these id's must obey this partial order in the fusion, and fusing them will give the associated profit
   , fpes :: [(NodeId, NodeId)] -- fusion preventing edges; these nodes can't be in the same partition
   }
 
---TODO maybe annotate with the dimensionality
 data NodeType = NodeT | UnfusableT | GenerateT | MapT | ZipWithT | FoldT | ScanLT | PermuteT | BackpermuteT
-
 makeGraph :: LabelledOpenAcc aenv a -> [NodeId] -> DirectedAcyclicGraph -> (NodeId, DirectedAcyclicGraph)
 makeGraph (LabelledOpenAcc acc) env dag = case acc of
   Alet lhs bnd body -> uncurry (makeGraph body) . first (applyLHS lhs env) $ makeGraph bnd env dag
@@ -101,17 +105,50 @@ getNodeID (_:ns) (ArrayVarsArray (ArrayVar (SuccIdx idx))) = getNodeID ns $ Arra
 getNodeID ns (ArrayVarsPair a1 a2) = let n1 = getNodeID ns a1; n2 = getNodeID ns a2 in if n1==n2 then n1 else error "inconsistent environment at newfusion/solver.hs" -- TODO once it works, remove this check
 getNodeID [] _ = error "NewFusion/Solver.hs: empty environment"
 
-
-{-ILP with, for each vertically/diagonally fusable edge, (X) binary variables:
--are fused in unknown order (see backpermute)
--are fused in fold-like shape
--are fused in (..)-like shape
-
-Horizontal fusion is allowed whenever both sides consume the same input in the same order/shape
-  (many nodes can consume in 'any shape')
-
 -}
 
+makeGraph = undefined
+
+data NodeType = GenerateT | MapT NodeId | ZipWithT NodeId NodeId | FoldT NodeId | ScanT NodeId Bool | PermuteT NodeId NodeId | BackpermuteT NodeId | StencilT NodeId | Stencil2T NodeId NodeId
+  
+ --  NodeT | UnfusableT | GenerateT | MapT | ZipWithT | FoldT | ScanLT | PermuteT | BackpermuteT
+
+
+data DirectedAcyclicGraph = DAG (IM.IntMap NodeType) [(NodeId, NodeId)]
+data ILPVar = Vertical NodeId NodeId | Horizontal NodeId NodeId | Pi NodeId | InputShape NodeId Bool | OutputShape NodeId Bool deriving (Eq, Ord)
+
+makeILP :: DirectedAcyclicGraph -> LP ILPVar Int
+makeILP (DAG nodes fpes) = execLPM $ do
+  -- fusion variables
+  let fusionVars = concat . IM.elems $ IM.mapWithKey makeVariables nodes
+  
+  setDirection Max -- maximise goal function
+  setObjective $ linCombination $ map (1,) fusionVars -- 'cost' function
+  
+
+  -- 'pi' variables for acyclicity
+
+  -- input and output shape variables
+
+  -- acyclicity contraints
+
+  -- fpe constraints
+
+  -- nodetype-specific constraints
+
+
+  where
+    makeVariables :: Int -> NodeType -> [ILPVar]
+    makeVariables n nodetype = let x = NodeId n in case nodetype of
+      GenerateT -> []
+      MapT y -> [Vertical x y]
+      ZipWithT y z -> [Vertical x y, Vertical x z]
+      FoldT y -> [Vertical x y]
+      ScanT y _ -> [Vertical x y]
+      PermuteT y _ -> [Vertical x y] -- can't fuse with the 'target array'
+      BackpermuteT y -> [Vertical x y]
+      StencilT y -> [Vertical x y]
+      Stencil2T y z -> [Vertical x y, Vertical x z]
 
 {-consumes its input in X order:
 no input: generate, use
@@ -188,8 +225,8 @@ pi_i in Z -> node i is in cluster n
 c_i in {0,1} -> the output of i is `internal' in the cluster pi_i)
 
 for Accelerate:
-each x_i has an associated y_i representing the OUTPUT shape: see X in foldDim discussion. 0 means 'like foldAll' and -1 means 'unknown shape' (see backpermute)
-Also a l_i, for left-to-right or right-to-left (see scans).
+each x_i has an associated y_i representing the INPUT shape and a z_i representing the OUPUT shape: see X in foldDim discussion. 0 means 'like foldAll' and -1 means 'unknown shape' (see backpermute)
+Also a lin_i and lout_i, for left-to-right or right-to-left (see scans).
 
 
 

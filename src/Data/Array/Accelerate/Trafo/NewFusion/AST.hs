@@ -25,7 +25,7 @@ import Data.Array.Accelerate.AST                      hiding ( PreOpenAcc(..), O
 import qualified Data.Array.Accelerate.AST            as AST
 
    
-newtype NodeId = NodeId Int deriving (Eq, Show)
+newtype NodeId = NodeId Int deriving (Eq, Show, Ord)
 
 type LabelledAcc = LabelledOpenAcc ()
 newtype LabelledOpenAcc aenv a = LabelledOpenAcc (PreLabelledAcc LabelledOpenAcc aenv a)

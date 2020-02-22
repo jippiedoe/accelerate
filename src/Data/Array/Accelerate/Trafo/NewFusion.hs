@@ -21,7 +21,7 @@ letBindEverything :: Acc a -> LabelledAcc a
 letBindEverything acc = evalState (letBindAcc acc) 1
 
 makeFullGraph :: LabelledAcc a -> DirectedAcyclicGraph
-makeFullGraph acc = snd $ makeGraph acc [] (DAG [] [] [])
+makeFullGraph acc = snd $ makeGraph acc [] undefined
 
 -- makes the ILP and calls the solver.
 makePartition :: DirectedAcyclicGraph -> [[NodeId]]
