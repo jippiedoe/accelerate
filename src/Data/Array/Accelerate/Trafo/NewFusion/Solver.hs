@@ -4,7 +4,7 @@
 module Data.Array.Accelerate.Trafo.NewFusion.Solver {- (export list) -} where
 
 import Data.Array.Accelerate.Trafo.NewFusion.AST hiding (PreFusedOpenAcc(..))
-import Data.Array.Accelerate.AST hiding (PreOpenAcc(..))
+--import Data.Array.Accelerate.AST hiding (PreOpenAcc(..))
 import Data.Bifunctor
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Map.Strict as M
@@ -106,82 +106,131 @@ getNodeID ns (ArrayVarsPair a1 a2) = let n1 = getNodeID ns a1; n2 = getNodeID ns
 getNodeID [] _ = error "NewFusion/Solver.hs: empty environment"
 
 -}
-
+makeGraph :: LabelledOpenAcc aenv a -> [NodeId] -> DirectedAcyclicGraph -> (NodeId, DirectedAcyclicGraph)
 makeGraph = undefined
 
-data NodeType = GenerateT | MapT NodeId | ZipWithT NodeId NodeId | FoldT NodeId | ScanT NodeId Bool | PermuteT NodeId NodeId | BackpermuteT NodeId | StencilT NodeId | Stencil2T NodeId NodeId
+-- for Scans, we ignore the ' variant (which returns both the prefix sums and the final sum as two separate arrays of different dimensions) for now
+data NodeType = GenerateT | MapT NodeId | ZipWithT NodeId NodeId | FoldDimT NodeId 
+              | FoldFlatT NodeId | ScanDimT NodeId Bool | ScanFlatT NodeId Bool
+              | PermuteT NodeId NodeId | BackpermuteT NodeId | StencilT NodeId | Stencil2T NodeId NodeId
   
  --  NodeT | UnfusableT | GenerateT | MapT | ZipWithT | FoldT | ScanLT | PermuteT | BackpermuteT
 
 
 data DirectedAcyclicGraph = DAG (IM.IntMap NodeType) [(NodeId, NodeId)]
-data ILPVar = Vertical NodeId NodeId | Horizontal NodeId NodeId | Pi NodeId | InputShape NodeId Bool | OutputShape NodeId Bool deriving (Eq, Ord)
+data ILPVar = Fusion NodeId   NodeId -- 0 means fused, 1 means not fused (not in the same fusion group)
+            | Pi              NodeId -- the number of the fusion group this node is in, used for acyclicity
+            | InputShape      NodeId -- -2 represents 'unknown' (backpermute output), -1 represents an even spread across all blocks, X>=0 means each threadblock holds every value along the innermost X dimensions (X=1 represents the current FoldDim approach, and X=0 means each threadblock holds only 1 value)
+            | OutputShape     NodeId 
+            | InputDirection  NodeId -- 0 is ->, 1 is <-, 2 is 'unknown'
+            | OutputDirection NodeId deriving (Eq, Ord)
 
+
+-- The LPM `monad' is a State (LinearProgram variables values) ()
+-- We write the LP by using functions like mapM_ to modify the state while discarding the () result
 makeILP :: DirectedAcyclicGraph -> LP ILPVar Int
-makeILP (DAG nodes fpes) = execLPM $ do
+makeILP (DAG nds fpes) = execLPM $ do
+  let verticals = concatMap makeVerticals nodes
+  let horizontals = makeHorizontals verticals
+  let verticalVars = map (uncurry Fusion) verticals
+  let horizontalVars = map (uncurry Fusion) horizontals
+  let fusionVars = verticals ++ horizontals
+  let fpeVars = map (uncurry Fusion) fpes
+  let piVars = map (Pi . fst) nodes
+
+  setDirection Min -- minimise cost function
+  setObjective $ linCombination $ map (1,) fusionVars -- cost function, currently minimising the number of unfused edges
+  
   -- fusion variables
-  let fusionVars = concat . IM.elems $ IM.mapWithKey makeVariables nodes
-  
-  setDirection Max -- maximise goal function
-  setObjective $ linCombination $ map (1,) fusionVars -- 'cost' function
-  
+  mapM_ (\x -> varBds x 0 1) fusionVars
 
   -- 'pi' variables for acyclicity
+  mapM_ (\x -> varBds x 0 (length nodes)) piVars
 
-  -- input and output shape variables
 
   -- acyclicity contraints
 
   -- fpe constraints
+  mapM_ (`varEq` 1) fpeVars 
 
-  -- nodetype-specific constraints
-
+  -- nodetype-specific constraints:
+  -- - input and output shape variables, including left/right
+  mapM_ makeConstraint nodes
+  -- - rules relating those variables to the fusion variables
+  mapM_ fusionShapeV verticalVars
+  mapM_ fusionShapeH horizontalVars
 
   where
-    makeVariables :: Int -> NodeType -> [ILPVar]
-    makeVariables n nodetype = let x = NodeId n in case nodetype of
+    nodes :: [(NodeId, NodeType)]
+    nodes = map (first NodeId) (IM.assocs nds)
+
+    -- All the fusion variables for vertical fusion, (x,y) means that y consumes x
+    makeVerticals :: (NodeId, NodeType) -> [(NodeId, NodeId)]
+    makeVerticals (x, nodetype) = case nodetype of
       GenerateT -> []
-      MapT y -> [Vertical x y]
-      ZipWithT y z -> [Vertical x y, Vertical x z]
-      FoldT y -> [Vertical x y]
-      ScanT y _ -> [Vertical x y]
-      PermuteT y _ -> [Vertical x y] -- can't fuse with the 'target array'
-      BackpermuteT y -> [Vertical x y]
-      StencilT y -> [Vertical x y]
-      Stencil2T y z -> [Vertical x y, Vertical x z]
+      MapT         y   -> [(y, x)]
+      ZipWithT     y z -> [(y, x), (z, x)]
+      FoldDimT     y   -> [(y, x)]
+      FoldFlatT    y   -> [(y, x)]
+      ScanDimT     y _ -> [(y, x)]
+      ScanFlatT    y _ -> [(y, x)]
+      PermuteT     y _ -> [(y, x)] -- can't fuse with the 'target array'
+      BackpermuteT y   -> [(y, x)]
+      StencilT     y   -> [(y, x)]
+      Stencil2T    y z -> [(y, x), (z, x)]
 
-{-consumes its input in X order:
-no input: generate, use
-any order: permute
-same order as output: map, zipWith (but both orders have to be identical, or one has to be unfused)
-unknown order (only works if input is produced in 'any order'): backpermute, foldSeg, fold1Seg
-fold-scan-like: fold, fold1, scanl, scanl1, scanl', scanr, scanr1, scanr'
-impossible to fuse (input has to be manifest): foreign, while, conditional, stencil, (stencil2?)
--}
+    -- given all the vertical fusion variables (where (x,y) means that the array x could be fused into the computation y),
+    -- produce a list of pairs of nodeIds that both consume the same array and could thus be fused horizontally.
+    makeHorizontals :: [(NodeId, NodeId)] -> [(NodeId, NodeId)]
+    makeHorizontals = concatMap carthesian . M.elems . M.fromListWith (++) . map (second pure)
+    carthesian :: [a] -> [(a, a)]
+    carthesian [] = []
+    carthesian (x:ys) = map (x,) ys ++ carthesian ys
 
-{-produces its output in X order:
-any order: generate, backpermute, stencil, (stencil2?)
-same order as input: map, zipWith
-unknown order: foldseg, fold1seg
-fold-like: fold, fold1
-scan-like: scanl, scanl1, scanl', scanr, scanr1, scanr'
-impossible to fuse (output has to be manifest): permute, foreign, while, conditional (with conditional, `could` fuse the output distributively...)
--}
+    makeConstraint :: (NodeId, NodeType) -> LPM ILPVar Int ()
+    makeConstraint (n, nodetype) = case nodetype of
+      GenerateT ->      do varBds (OutputDirection n) 0 2
+                           varGeq (OutputShape n) (-2)
+      MapT _    ->      do varBds (OutputDirection n) 0 1
+                           varGeq (OutputShape n) (-2)
+                           equalTo (linCombination [(-1, OutputDirection n), (1, InputDirection n)]) 0
+                           equalTo (linCombination [(-1, OutputShape     n), (1, InputShape     n)]) 0
+      ZipWithT _ _ ->   do varBds (OutputDirection n) 0 2
+                           varGeq (OutputShape n) (-2)
+                           equalTo (linCombination [(-1, OutputDirection n), (1, InputDirection n)]) 0
+                           equalTo (linCombination [(-1, OutputShape     n), (1, InputShape     n)]) 0
+      FoldDimT _ ->     do varBds (OutputDirection n) 0 2
+                           varGeq (OutputShape n) 0
+                           equalTo (linCombination [(-1, OutputDirection n), (1, InputDirection n)]) 0
+                           equalTo (linCombination [(-1, OutputShape     n), (1, InputShape     n)]) 1
+      FoldFlatT _  ->   do varBds (InputDirection n) 0 2 -- the output of a FoldFlat is just one element, so no variables needed
+                           varEq (InputShape n) (-1)
+      ScanDimT _ b ->   do varEq (OutputDirection n) (fromEnum b)
+                           varGeq (OutputShape n) 1
+                           equalTo (linCombination [(-1, OutputDirection n), (1, InputDirection n)]) 0
+                           equalTo (linCombination [(-1, OutputShape     n), (1, InputShape     n)]) 0
+      ScanFlatT _ b ->  do varEq (InputDirection n) (fromEnum b)
+                           varEq (InputShape n) (-1)
+                           equalTo (linCombination [(-1, OutputDirection n), (1, InputDirection n)]) 0
+                           equalTo (linCombination [(-1, OutputShape     n), (1, InputShape     n)]) 0
+      PermuteT _ _ ->   do varBds (InputDirection n) 0 2 -- can't fuse the output of a permute, so no variable needed
+                           varGeq (InputShape n) (-2)
+      BackpermuteT _ -> do varBds (OutputDirection n) 0 2 -- the output can be any shape, but the input has to be every shape
+                           varGeq (OutputShape n) (-2)
+                           varEq (InputDirection n) 2
+                           varEq (InputShape n) (-2)
+      StencilT _ ->     do varBds (OutputDirection n) 0 2 -- for now, stencils don't fuse with their inputs so no input variables needed
+                           varGeq (OutputShape n) (-2)
+      Stencil2T _ _ ->  do varBds (OutputDirection n) 0 2 -- for now, stencils don't fuse with their inputs so no input variables needed
+                           varGeq (OutputShape n) (-2)
 
+    -- generate the constraints belonging to a vertical fusion
+    fusionShapeV :: ILPVar -> LPM ILPVar Int ()
+    fusionShapeV (Fusion x y) = _ --TODO leq/geqTo (linCombination [(-1, OutputDirection x), (1, InputDirection y)]) 0
 
---fold-like: each threadblock cooperatively reads, processes and reduces a stripe of the input, then do a parallel reduction, then once only 1 block remains a single threadblock reduces it (and combines with initial element).
-
---foldseg-like: comparable to above, except for the segments.. A dynamically scheduled queue offloads work to the available threads.
-
---scan-like: 1) each threadblock scans a part of the array. 2) one threadblock scans the final elements of these scans, to come up with the offsets. 3) each threadblock appends the offset to each element of the result
-  -- this is close to a fold, and perhaps fusing it with a fold is 'sometimes beneficial': it makes the fold itself more expensive to perform it 'like a scan', but only slightly.
-    -- hard to say, ask trev
-
---stencil-like: fusing 'into' stencils duplicates work, so only good if input is cheap to compute.
-  --works just like map, so can fuse into anything(?)
-
-
-
+    -- generate the constraints belonging to a horizontal fusion
+    fusionShapeH :: ILPVar -> LPM ILPVar Int ()
+    fusionShapeH (Fusion x y) = undefined
 
 -- data location options:
 {-
@@ -190,7 +239,6 @@ foldDim output                                :  each threadblock has the innerm
 
 scanAll input = scanAll output = foldAll input:  all values spread evenly (in order) across threadBLOCKS
 foldAll output                                :  there is only 1 value, it's at 0
-
 
 
 To allow more, maybe give folddim the option to have an arbitrary number of innermost dimensions per threadblock,
@@ -215,7 +263,7 @@ X should be part of the ILP
 
 x_{i,j} in {0,1} -> nodes i,j fused or not fused
   not for each pair: 'unrelated' nodes have no variable - unless we want to attach weight to them
-  - connected nodes have the vertical/diagonal condition: can only be fused if the intermediate result is of consistent shape
+  - connected nodes have the Fusion/diagonal condition: can only be fused if the intermediate result is of consistent shape
   - sibling nodes have the horizontal condition: can only be fused if the inputshape is consistent
 
 for acyclicity:
