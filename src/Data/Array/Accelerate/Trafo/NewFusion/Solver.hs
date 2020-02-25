@@ -134,7 +134,7 @@ makeILP (DAG nds fpes) = execLPM $ do
   let horizontals = makeHorizontals verticals
   let verticalVars = map (uncurry Fusion) verticals
   let horizontalVars = map (uncurry Fusion) horizontals
-  let fusionVars = verticals ++ horizontals
+  let fusionVars = verticalVars ++ horizontalVars
   let fpeVars = map (uncurry Fusion) fpes
   let piVars = map (Pi . fst) nodes
 
@@ -147,14 +147,15 @@ makeILP (DAG nds fpes) = execLPM $ do
   -- 'pi' variables for acyclicity
   mapM_ (\x -> varBds x 0 (length nodes)) piVars
 
-
-  -- acyclicity contraints
-
   -- fpe constraints
   mapM_ (`varEq` 1) fpeVars 
 
+  -- acyclicity contraints
+  mapM_ makeAcyclicV (verticalVars ++ fpeVars)
+  mapM_ makeAcyclicH horizontalVars
+
   -- nodetype-specific constraints:
-  -- - input and output shape variables, including left/right
+  -- - input and output shape and direction variables
   mapM_ makeConstraint nodes
   -- - rules relating those variables to the fusion variables
   mapM_ fusionShapeV verticalVars
@@ -163,6 +164,10 @@ makeILP (DAG nds fpes) = execLPM $ do
   where
     nodes :: [(NodeId, NodeType)]
     nodes = map (first NodeId) (IM.assocs nds)
+
+    -- the maximum number of innermost dimensions a threadblock may hold, for a fold or scan on multidimensional data
+    maxFoldScanDims :: Int
+    maxFoldScanDims = 5
 
     -- All the fusion variables for vertical fusion, (x,y) means that y consumes x
     makeVerticals :: (NodeId, NodeType) -> [(NodeId, NodeId)]
@@ -176,13 +181,14 @@ makeILP (DAG nds fpes) = execLPM $ do
       ScanFlatT    y _ -> [(y, x)]
       PermuteT     y _ -> [(y, x)] -- can't fuse with the 'target array'
       BackpermuteT y   -> [(y, x)]
-      StencilT     y   -> [(y, x)]
-      Stencil2T    y z -> [(y, x), (z, x)]
+      StencilT     _   -> [] -- [(y, x)]          
+      Stencil2T    _ _ -> [] -- [(y, x), (z, x)]
 
     -- given all the vertical fusion variables (where (x,y) means that the array x could be fused into the computation y),
     -- produce a list of pairs of nodeIds that both consume the same array and could thus be fused horizontally.
+    -- TODO sort and remove duplicates
     makeHorizontals :: [(NodeId, NodeId)] -> [(NodeId, NodeId)]
-    makeHorizontals = concatMap carthesian . M.elems . M.fromListWith (++) . map (second pure)
+    makeHorizontals = map (\(x,y) -> if x<y then (x,y) else (y,x)) . concatMap carthesian . M.elems . M.fromListWith (++) . map (second pure)
     carthesian :: [a] -> [(a, a)]
     carthesian [] = []
     carthesian (x:ys) = map (x,) ys ++ carthesian ys
@@ -200,13 +206,13 @@ makeILP (DAG nds fpes) = execLPM $ do
                            equalTo (linCombination [(-1, OutputDirection n), (1, InputDirection n)]) 0
                            equalTo (linCombination [(-1, OutputShape     n), (1, InputShape     n)]) 0
       FoldDimT _ ->     do varBds (OutputDirection n) 0 2
-                           varGeq (OutputShape n) 0
+                           varBds (OutputShape n) 0 maxFoldScanDims
                            equalTo (linCombination [(-1, OutputDirection n), (1, InputDirection n)]) 0
                            equalTo (linCombination [(-1, OutputShape     n), (1, InputShape     n)]) 1
       FoldFlatT _  ->   do varBds (InputDirection n) 0 2 -- the output of a FoldFlat is just one element, so no variables needed
                            varEq (InputShape n) (-1)
       ScanDimT _ b ->   do varEq (OutputDirection n) (fromEnum b)
-                           varGeq (OutputShape n) 1
+                           varBds (OutputShape n) 1 maxFoldScanDims
                            equalTo (linCombination [(-1, OutputDirection n), (1, InputDirection n)]) 0
                            equalTo (linCombination [(-1, OutputShape     n), (1, InputShape     n)]) 0
       ScanFlatT _ b ->  do varEq (InputDirection n) (fromEnum b)
@@ -224,13 +230,39 @@ makeILP (DAG nds fpes) = execLPM $ do
       Stencil2T _ _ ->  do varBds (OutputDirection n) 0 2 -- for now, stencils don't fuse with their inputs so no input variables needed
                            varGeq (OutputShape n) (-2)
 
-    -- generate the constraints belonging to a vertical fusion
-    fusionShapeV :: ILPVar -> LPM ILPVar Int ()
-    fusionShapeV (Fusion x y) = _ --TODO leq/geqTo (linCombination [(-1, OutputDirection x), (1, InputDirection y)]) 0
+    -- generate the constraints belonging to a vertical fusion: if fused, the input and output have to match
+    fusionShapeV, fusionShapeH :: ILPVar -> LPM ILPVar Int ()
+    fusionShapeV (Fusion x y) = do
+      leqTo (linCombination [(-1, OutputDirection x), ( 1, InputDirection y), (-2, Fusion x y)]) 0 -- Because the direction is between 0 and 2, this ensures that if fused the directions are equal without imposing restrictions if not fused
+      leqTo (linCombination [( 1, OutputDirection x), (-1, InputDirection y), (-2, Fusion x y)]) 0
+      leqTo (linCombination [(-1, OutputShape x), ( 1, InputShape y), (-maxFoldScanDims, Fusion x y)]) 0
+      leqTo (linCombination [( 1, OutputShape x), (-1, InputShape y), (-maxFoldScanDims, Fusion x y)]) 0
+    fusionShapeV _ = ilpError
 
-    -- generate the constraints belonging to a horizontal fusion
-    fusionShapeH :: ILPVar -> LPM ILPVar Int ()
-    fusionShapeH (Fusion x y) = undefined
+    -- generate the constraints belonging to a horizontal fusion: if fused, the inputs have to match
+    fusionShapeH (Fusion x y) = do
+      leqTo (linCombination [(-1, InputDirection x), ( 1, InputDirection y), (-2, Fusion x y)]) 0 -- Because the direction is between 0 and 2, this ensures that if fused the directions are equal without imposing restrictions if not fused
+      leqTo (linCombination [( 1, InputDirection x), (-1, InputDirection y), (-2, Fusion x y)]) 0
+      leqTo (linCombination [(-1, InputShape x), ( 1, InputShape y), (-maxFoldScanDims, Fusion x y)]) 0
+      leqTo (linCombination [( 1, InputShape x), (-1, InputShape y), (-maxFoldScanDims, Fusion x y)]) 0
+    fusionShapeH _ = ilpError
+
+
+    makeAcyclicV, makeAcyclicH :: ILPVar -> LPM ILPVar Int ()
+    makeAcyclicV (Fusion x y) = do
+      leqTo (linCombination [(1,            Fusion x y), (-1, Pi y), ( 1, Pi x)]) 0 -- f_{x,y} ≤ pi_y − pi_x   ==> precedence-preserving
+      leqTo (linCombination [(-IM.size nds, Fusion x y), ( 1, Pi y), (-1, Pi x)]) 0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
+    makeAcyclicV _ = ilpError
+
+    makeAcyclicH (Fusion x y) = do
+      leqTo (linCombination [(-IM.size nds, Fusion x y), (-1, Pi y), ( 1, Pi x)]) 0 -- −N*f_{i,j} ≤ pi_y - pi_x
+      leqTo (linCombination [(-IM.size nds, Fusion x y), ( 1, Pi y), (-1, Pi x)]) 0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
+    makeAcyclicH _ = ilpError
+    
+
+    ilpError = error "A function expected '(Fusion x y)' but got something else in NewFusion/Solver.hs"
+
+
 
 -- data location options:
 {-
@@ -263,7 +295,7 @@ X should be part of the ILP
 
 x_{i,j} in {0,1} -> nodes i,j fused or not fused
   not for each pair: 'unrelated' nodes have no variable - unless we want to attach weight to them
-  - connected nodes have the Fusion/diagonal condition: can only be fused if the intermediate result is of consistent shape
+  - connected nodes have the vertical/diagonal condition: can only be fused if the intermediate result is of consistent shape
   - sibling nodes have the horizontal condition: can only be fused if the inputshape is consistent
 
 for acyclicity:
@@ -279,10 +311,6 @@ Also a lin_i and lout_i, for left-to-right or right-to-left (see scans).
 
 
 ILP constraints:
-
-acyclic, precedence-preserving:
-   x_{i,j} ≤ pi_j − pi_i ≤ N*x_{i,j} (with an edge from i to j)
-−N*x_{i,j} ≤ pi_j - pi_i ≤ N*x_{i,j} (with no edge from i to j)
 
 1 ≤ pi_j - pi_i
 
