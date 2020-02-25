@@ -51,7 +51,8 @@ module Data.Array.Accelerate.Trafo.Fusion (
 import Prelude                                          hiding ( exp, until )
 
 -- enemy
-import Data.Array.Accelerate.Trafo.NewFusion ()--imported for ghcid purposes
+import Data.Array.Accelerate.Trafo.NewFusion
+import System.IO.Unsafe
 -- friends
 import Data.BitSet
 import Data.Array.Accelerate.AST
@@ -125,7 +126,7 @@ withSimplStats x = x
 --      encode this property in the type somehow...
 --
 convertOpenAcc :: Config -> OpenAcc aenv arrs -> DelayedOpenAcc aenv arrs
-convertOpenAcc config = manifest config . computeAcc . embedOpenAcc config
+convertOpenAcc config acc = manifest config . computeAcc . embedOpenAcc config . unsafePerformIO $ dotesting acc
 
 -- Convert array computations into an embeddable delayed representation.
 -- Reapply the embedding function from the first pass and unpack the

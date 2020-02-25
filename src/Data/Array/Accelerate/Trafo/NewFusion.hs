@@ -1,4 +1,4 @@
-module Data.Array.Accelerate.Trafo.NewFusion (doFusion) where
+module Data.Array.Accelerate.Trafo.NewFusion (doFusion, dotesting) where
 
 
 import Data.Array.Accelerate.Trafo.NewFusion.AST
@@ -16,11 +16,19 @@ doFusion acc = fusedacc
     groupedacc = rewriteAST letboundacc partition
     fusedacc = finalizeFusion groupedacc
 
+dotesting :: OpenAcc env a -> IO (OpenAcc env a)
+dotesting acc = do print "newfusion start"
+                   let lbacc = letBindEverything acc
+                   let graph = makeFullGraph lbacc
+                   let lp    = makeILP graph
+                   number <- callGLPK lp
+                   print number --3
+                   return acc
 
-letBindEverything :: Acc a -> LabelledAcc a
+letBindEverything :: OpenAcc env a -> LabelledOpenAcc env a
 letBindEverything acc = evalState (letBindAcc acc) 1
 
-makeFullGraph :: LabelledAcc a -> DirectedAcyclicGraph
+makeFullGraph :: LabelledOpenAcc env a -> DirectedAcyclicGraph
 makeFullGraph acc = snd $ makeGraph acc [] undefined
 
 -- makes the ILP and calls the solver.

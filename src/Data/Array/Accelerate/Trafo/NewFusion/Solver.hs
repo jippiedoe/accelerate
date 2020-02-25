@@ -1,77 +1,81 @@
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE TupleSections         #-}
+{-# LANGUAGE RecordWildCards       #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeApplications      #-}
+{-# LANGUAGE TypeOperators         #-}
 
 module Data.Array.Accelerate.Trafo.NewFusion.Solver {- (export list) -} where
 
 import Data.Array.Accelerate.Trafo.NewFusion.AST hiding (PreFusedOpenAcc(..))
---import Data.Array.Accelerate.AST hiding (PreOpenAcc(..))
+import Data.Array.Accelerate.AST hiding (PreOpenAcc(..))
 import Data.Bifunctor
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Map.Strict as M
 import Control.Monad.LPMonad
 import Data.LinearProgram
+import Data.Array.Accelerate.Analysis.Match
+import Data.Array.Accelerate.Array.Sugar
 
-{-
-data DirectedAcyclicGraph = DAG 
-  { nodes :: [(NodeId, NodeType)]
-  , deps :: [(NodeId, NodeId)] -- the nodes with these id's must obey this partial order in the fusion, and fusing them will give the associated profit
-  , fpes :: [(NodeId, NodeId)] -- fusion preventing edges; these nodes can't be in the same partition
-  }
 
-data NodeType = NodeT | UnfusableT | GenerateT | MapT | ZipWithT | FoldT | ScanLT | PermuteT | BackpermuteT
 makeGraph :: LabelledOpenAcc aenv a -> [NodeId] -> DirectedAcyclicGraph -> (NodeId, DirectedAcyclicGraph)
 makeGraph (LabelledOpenAcc acc) env dag = case acc of
   Alet lhs bnd body -> uncurry (makeGraph body) . first (applyLHS lhs env) $ makeGraph bnd env dag
-  Variable n x -> (n, dag {nodes = (n, NodeT):nodes dag, 
-                           deps = (getNodeID env x, n):deps dag} )
-  Apply n f x -> let (n', dag') = makeGraphAF f env n dag in (n, dag' {nodes = (n, NodeT):nodes dag, 
-                                                              deps = (n, n') : deps dag,
-                                                              fpes = (getNodeID env x, n) : fpes dag})
-  Aforeign n _ _ x -> (n, dag {nodes = (n, UnfusableT):nodes dag,
+  Variable n x -> (n, dag {nodes = (n, MapT (getNodeID env x)) $: nodes dag}) -- map is the canonical example of something which fuses every way
+  Apply n f x -> let (_, dag') = makeGraphAF f env n dag in 
+                     (n, dag' {nodes = (n, UnfusableT (getNodeID env x)) $: nodes dag, 
+                               fpes = (getNodeID env x, n) : fpes dag})
+  Aforeign n _ _ x -> (n, dag {nodes = (n, UnfusableT (getNodeID env x)) $: nodes dag,
                                fpes = (getNodeID env x, n):fpes dag})
   Acond n e acc1 acc2 -> let dagE = makeGraphE e env dag n
                              (n1, dag1) = makeGraph acc1 env dagE
                              (n2, dag2) = makeGraph acc2 env dag1 in
-                               (n, dag2 {nodes = (n, UnfusableT) : nodes dag2,
+                               (n, dag2 {nodes = (n, UnfusableT n1) $: nodes dag2, 
                                 fpes = (n, n1) : (n, n2) : fpes dag2})
   Awhile n f g x -> let (nf, dagF) = makeGraphAF f env n dag
                         (ng, dagG) = makeGraphAF g env nf dagF in
-                          (n, dagG {nodes = (n, UnfusableT) : nodes dagG,
+                          (n, dagG {nodes = (n, UnfusableT nf) $: nodes dagG,
                            fpes = (n, nf) : (nf, ng) : (getNodeID env x, n) : fpes dagG})
-  Use n _ -> (n, dag {nodes = (n, NodeT) : nodes dag})
-  Unit n e -> let dagE = makeGraphE e env dag n in (n, dagE {nodes = (n, NodeT) : nodes dagE})
+  Use n _ -> (n, dag {nodes = (n, UnfusableT n) $: nodes dag})
+  Unit n e -> let dagE = makeGraphE e env dag n in (n, dagE {nodes = (n, UnfusableT n) $: nodes dagE})
   --TODO fuse reshape when possible
-  Reshape n e x -> let dagE = makeGraphE e env dag n in (n, dagE {nodes = (n, UnfusableT) : nodes dagE,
+  Reshape n e x -> let dagE = makeGraphE e env dag n in (n, dagE {nodes = (n, UnfusableT (getNodeID env x)) $: nodes dagE,
                                 fpes = (getNodeID env x, n) : fpes dagE})
   Generate n e f -> let dagE = makeGraphE e env dag n
                         dagF = makeGraphF f env dagE n in
-                          (n, dagF {nodes = (n, GenerateT) : nodes dagF})
+                          (n, dagF {nodes = (n, GenerateT) $: nodes dagF})
   --TODO slice
   Map n f x -> let dagF = makeGraphF f env dag n in
-                    (n, dagF {nodes = (n, MapT) : nodes dagF,
-                        deps = (getNodeID env x, n) : deps dagF})
+                    (n, dagF {nodes = (n, MapT (getNodeID env x)) $: nodes dagF})
   ZipWith n f x y -> let dagF = makeGraphF f env dag n in
-                          (n, dagF {nodes = (n, ZipWithT) : nodes dagF,
-                          deps = (getNodeID env x, n) : (getNodeID env y, n) : deps dagF})
-  Fold n f e x -> let dagF = makeGraphF f env dag n
-                      dagE = makeGraphE e env dagF n in
-                        (n, dagE {nodes = (n, FoldT) : nodes dagE,
-                        deps = (getNodeID env x, n) : deps dagE})
+                          (n, dagF {nodes = (n, ZipWithT (getNodeID env x) (getNodeID env y)) $: nodes dagF})
+  Fold n f e (x :: ArrayVars aenv (Array (sh:.Int) e))
+    | Just Refl <- matchShapeType @sh @Z ->
+        let dagF = makeGraphF f env dag n
+            dagE = makeGraphE e env dagF n in
+              (n, dagE {nodes = (n, FoldFlatT (getNodeID env x)) $: nodes dagE})
+    | otherwise ->
+        let dagF = makeGraphF f env dag n
+            dagE = makeGraphE e env dagF n in
+              (n, dagE {nodes = (n, FoldDimT (getNodeID env x)) $: nodes dagE})
   -- TODO fold1, foldSeg, fold1Seg
-  Scanl n f e x -> let dagF = makeGraphF f env dag n
-                       dagE = makeGraphE e env dagF n in
-                        (n, dagE {nodes = (n, ScanLT) : nodes dagE,
-                        deps = (getNodeID env x, n) : deps dagE})
+  Scanl n f e (x :: ArrayVars aenv (Array (sh:.Int) e))
+   | Just Refl <- matchShapeType @sh @Z ->
+        let dagF = makeGraphF f env dag n
+            dagE = makeGraphE e env dagF n in
+              (n, dagE {nodes = (n, ScanFlatT (getNodeID env x) False) $: nodes dagE})
+   | otherwise ->
+        let dagF = makeGraphF f env dag n
+            dagE = makeGraphE e env dagF n in
+              (n, dagE {nodes = (n, ScanFlatT (getNodeID env x) False) $: nodes dagE})
   -- TODO scanl', scanl1, scanr, scanr', scanr1
   Permute n f x g y -> let dagF = makeGraphF f env dag n
                            dagG = makeGraphF g env dagF n in
-                            (n, dagG {nodes = (n, PermuteT) : nodes dagG,
-                            deps = (getNodeID env x, n) : deps dagG,
+                            (n, dagG {nodes = (n, PermuteT (getNodeID env x) (getNodeID env y)) $: nodes dagG,
                             fpes = (getNodeID env y, n) : fpes dagG})
   Backpermute n e f x -> let dagE = makeGraphE e env dag n
                              dagF = makeGraphF f env dagE n in
-                              (n, dagF {nodes = (n, BackpermuteT) : nodes dagF,
-                              deps = (getNodeID env x, n) : deps dagF}) 
+                              (n, dagF {nodes = (n, BackpermuteT (getNodeID env x)) $: nodes dagF}) 
   -- TODO stencil, stencil2                                                     
   _ -> undefined
 
@@ -87,7 +91,8 @@ makeGraphE = undefined
 makeGraphF :: LabelledOpenFun env aenv a -> [NodeId] -> DirectedAcyclicGraph -> NodeId -> DirectedAcyclicGraph
 makeGraphF = undefined
 
-
+($:) :: (NodeId, NodeType) -> IM.IntMap NodeType -> IM.IntMap NodeType
+($:) (NodeId n, x) = IM.insert n x
 
 -- given a list representing "env", and one representing "a", make a list representing "env'"
 applyLHS :: LeftHandSide a env env' 
@@ -105,38 +110,41 @@ getNodeID (_:ns) (ArrayVarsArray (ArrayVar (SuccIdx idx))) = getNodeID ns $ Arra
 getNodeID ns (ArrayVarsPair a1 a2) = let n1 = getNodeID ns a1; n2 = getNodeID ns a2 in if n1==n2 then n1 else error "inconsistent environment at newfusion/solver.hs" -- TODO once it works, remove this check
 getNodeID [] _ = error "NewFusion/Solver.hs: empty environment"
 
--}
-makeGraph :: LabelledOpenAcc aenv a -> [NodeId] -> DirectedAcyclicGraph -> (NodeId, DirectedAcyclicGraph)
-makeGraph = undefined
+
 
 -- for Scans, we ignore the ' variant (which returns both the prefix sums and the final sum as two separate arrays of different dimensions) for now
+-- for Scans, 'False' is left-to-right (corresponding to 0 in the ILP)
 data NodeType = GenerateT | MapT NodeId | ZipWithT NodeId NodeId | FoldDimT NodeId 
               | FoldFlatT NodeId | ScanDimT NodeId Bool | ScanFlatT NodeId Bool
-              | PermuteT NodeId NodeId | BackpermuteT NodeId | StencilT NodeId | Stencil2T NodeId NodeId
+              | PermuteT NodeId NodeId | BackpermuteT NodeId | UnfusableT NodeId
+              | StencilT NodeId | Stencil2T NodeId NodeId
   
- --  NodeT | UnfusableT | GenerateT | MapT | ZipWithT | FoldT | ScanLT | PermuteT | BackpermuteT
 
+-- The intmap contains a minimal description of node (NodeId i) at index i. 
+-- The list contains the fusion preventing edges.
+data DirectedAcyclicGraph = DAG {
+  nodes :: IM.IntMap NodeType,
+  fpes :: [(NodeId, NodeId)]}
 
-data DirectedAcyclicGraph = DAG (IM.IntMap NodeType) [(NodeId, NodeId)]
 data ILPVar = Fusion NodeId   NodeId -- 0 means fused, 1 means not fused (not in the same fusion group)
             | Pi              NodeId -- the number of the fusion group this node is in, used for acyclicity
             | InputShape      NodeId -- -2 represents 'unknown' (backpermute output), -1 represents an even spread across all blocks, X>=0 means each threadblock holds every value along the innermost X dimensions (X=1 represents the current FoldDim approach, and X=0 means each threadblock holds only 1 value)
             | OutputShape     NodeId 
             | InputDirection  NodeId -- 0 is ->, 1 is <-, 2 is 'unknown'
-            | OutputDirection NodeId deriving (Eq, Ord)
+            | OutputDirection NodeId deriving (Eq, Ord, Show)
 
 
 -- The LPM `monad' is a State (LinearProgram variables values) ()
 -- We write the LP by using functions like mapM_ to modify the state while discarding the () result
 makeILP :: DirectedAcyclicGraph -> LP ILPVar Int
-makeILP (DAG nds fpes) = execLPM $ do
-  let verticals = concatMap makeVerticals nodes
+makeILP DAG{..} = execLPM $ do
+  let verticals = concatMap makeVerticals nodes'
   let horizontals = makeHorizontals verticals
   let verticalVars = map (uncurry Fusion) verticals
   let horizontalVars = map (uncurry Fusion) horizontals
   let fusionVars = verticalVars ++ horizontalVars
   let fpeVars = map (uncurry Fusion) fpes
-  let piVars = map (Pi . fst) nodes
+  let piVars = map (Pi . fst) nodes'
 
   setDirection Min -- minimise cost function
   setObjective $ linCombination $ map (1,) fusionVars -- cost function, currently minimising the number of unfused edges
@@ -156,14 +164,14 @@ makeILP (DAG nds fpes) = execLPM $ do
 
   -- nodetype-specific constraints:
   -- - input and output shape and direction variables
-  mapM_ makeConstraint nodes
+  mapM_ makeConstraint nodes'
   -- - rules relating those variables to the fusion variables
   mapM_ fusionShapeV verticalVars
   mapM_ fusionShapeH horizontalVars
 
   where
-    nodes :: [(NodeId, NodeType)]
-    nodes = map (first NodeId) (IM.assocs nds)
+    nodes' :: [(NodeId, NodeType)]
+    nodes' = map (first NodeId) (IM.assocs nodes)
 
     -- the maximum number of innermost dimensions a threadblock may hold, for a fold or scan on multidimensional data
     maxFoldScanDims :: Int
@@ -172,7 +180,8 @@ makeILP (DAG nds fpes) = execLPM $ do
     -- All the fusion variables for vertical fusion, (x,y) means that y consumes x
     makeVerticals :: (NodeId, NodeType) -> [(NodeId, NodeId)]
     makeVerticals (x, nodetype) = case nodetype of
-      GenerateT -> []
+      UnfusableT _     -> []
+      GenerateT        -> []
       MapT         y   -> [(y, x)]
       ZipWithT     y z -> [(y, x), (z, x)]
       FoldDimT     y   -> [(y, x)]
@@ -195,6 +204,8 @@ makeILP (DAG nds fpes) = execLPM $ do
 
     makeConstraint :: (NodeId, NodeType) -> LPM ILPVar Int ()
     makeConstraint (n, nodetype) = case nodetype of
+      UnfusableT _ ->   do varBds (OutputDirection n) 0 2
+                           varGeq (OutputShape n) (-2)
       GenerateT ->      do varBds (OutputDirection n) 0 2
                            varGeq (OutputShape n) (-2)
       MapT _    ->      do varBds (OutputDirection n) 0 1
@@ -250,17 +261,31 @@ makeILP (DAG nds fpes) = execLPM $ do
 
     makeAcyclicV, makeAcyclicH :: ILPVar -> LPM ILPVar Int ()
     makeAcyclicV (Fusion x y) = do
-      leqTo (linCombination [(1,            Fusion x y), (-1, Pi y), ( 1, Pi x)]) 0 -- f_{x,y} ≤ pi_y − pi_x   ==> precedence-preserving
-      leqTo (linCombination [(-IM.size nds, Fusion x y), ( 1, Pi y), (-1, Pi x)]) 0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
+      leqTo (linCombination [(1,              Fusion x y), (-1, Pi y), ( 1, Pi x)]) 0 -- f_{x,y} ≤ pi_y − pi_x   ==> precedence-preserving
+      leqTo (linCombination [(-IM.size nodes, Fusion x y), ( 1, Pi y), (-1, Pi x)]) 0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
     makeAcyclicV _ = ilpError
 
     makeAcyclicH (Fusion x y) = do
-      leqTo (linCombination [(-IM.size nds, Fusion x y), (-1, Pi y), ( 1, Pi x)]) 0 -- −N*f_{i,j} ≤ pi_y - pi_x
-      leqTo (linCombination [(-IM.size nds, Fusion x y), ( 1, Pi y), (-1, Pi x)]) 0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
+      leqTo (linCombination [(-IM.size nodes, Fusion x y), (-1, Pi y), ( 1, Pi x)]) 0 -- −N*f_{i,j} ≤ pi_y - pi_x
+      leqTo (linCombination [(-IM.size nodes, Fusion x y), ( 1, Pi y), (-1, Pi x)]) 0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
     makeAcyclicH _ = ilpError
     
 
     ilpError = error "A function expected '(Fusion x y)' but got something else in NewFusion/Solver.hs"
+
+
+callGLPK :: LP ILPVar Int -> IO Int
+callGLPK lp = do
+  print "res1:"
+  res1 <- glpSolveVars opt1 lp
+  print res1
+  print "res2:"
+  res2 <- glpSolveVars opt2 lp
+  print res2
+  return 3
+  where opt1 = simplexDefaults
+        opt2 = mipDefaults
+
 
 
 

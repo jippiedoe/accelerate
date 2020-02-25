@@ -397,6 +397,12 @@ Library
 
         Language.Haskell.TH.Extra
 
+        -- newfusion by David
+        Data.Array.Accelerate.Trafo.NewFusion
+        Data.Array.Accelerate.Trafo.NewFusion.AST
+        Data.Array.Accelerate.Trafo.NewFusion.LetBind
+        Data.Array.Accelerate.Trafo.NewFusion.Solver
+
   if flag(nofib)
     build-depends:
           tasty-expected-failure        >= 0.11
