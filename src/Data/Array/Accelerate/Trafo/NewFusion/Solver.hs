@@ -22,15 +22,15 @@ makeGraph :: LabelledOpenAcc aenv a -> [NodeId] -> DirectedAcyclicGraph -> (Node
 makeGraph (LabelledOpenAcc acc) env dag = case acc of
   Alet lhs bnd body -> uncurry (makeGraph body) . first (applyLHS lhs env) $ makeGraph bnd env dag
   Variable n x -> (n, dag {nodes = (n, MapT (getNodeID env x)) $: nodes dag}) -- map is the canonical example of something which fuses every way
-  Apply n f x -> let (_, dag') = makeGraphAF f env n dag in 
-                     (n, dag' {nodes = (n, UnfusableT (getNodeID env x)) $: nodes dag, 
+  Apply n f x -> let (_, dag') = makeGraphAF f env n dag in
+                     (n, dag' {nodes = (n, UnfusableT (getNodeID env x)) $: nodes dag,
                                fpes = (getNodeID env x, n) : fpes dag})
   Aforeign n _ _ x -> (n, dag {nodes = (n, UnfusableT (getNodeID env x)) $: nodes dag,
                                fpes = (getNodeID env x, n):fpes dag})
   Acond n e acc1 acc2 -> let dagE = makeGraphE e env dag n
                              (n1, dag1) = makeGraph acc1 env dagE
                              (n2, dag2) = makeGraph acc2 env dag1 in
-                               (n, dag2 {nodes = (n, UnfusableT n1) $: nodes dag2, 
+                               (n, dag2 {nodes = (n, UnfusableT n1) $: nodes dag2,
                                 fpes = (n, n1) : (n, n2) : fpes dag2})
   Awhile n f g x -> let (nf, dagF) = makeGraphAF f env n dag
                         (ng, dagG) = makeGraphAF g env nf dagF in
@@ -75,8 +75,8 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
                             fpes = (getNodeID env y, n) : fpes dagG})
   Backpermute n e f x -> let dagE = makeGraphE e env dag n
                              dagF = makeGraphF f env dagE n in
-                              (n, dagF {nodes = (n, BackpermuteT (getNodeID env x)) $: nodes dagF}) 
-  -- TODO stencil, stencil2                                                     
+                              (n, dagF {nodes = (n, BackpermuteT (getNodeID env x)) $: nodes dagF})
+  -- TODO stencil, stencil2
   _ -> undefined
 
 
@@ -86,16 +86,23 @@ makeGraphAF (Abody body) env _ dag = makeGraph body env dag
 
 --we're in an expression, so in a single Node, so we want to know the deps of this node. Just traverse the Exp and look for 'index' and 'linearindex' to add fpe's
 makeGraphE :: LabelledOpenExp env aenv a -> [NodeId] -> DirectedAcyclicGraph -> NodeId -> DirectedAcyclicGraph
-makeGraphE = undefined
---like above
+makeGraphE expr env dag n = case expr of
+  Index       (LabelledOpenAcc (Variable _ a)) sh -> let dag' = makeGraphE sh env dag n in dag' {fpes = (getNodeID env a, n) : fpes dag'}
+  LinearIndex (LabelledOpenAcc (Variable _ a)) i  -> let dag' = makeGraphE i  env dag n in dag' {fpes = (getNodeID env a, n) : fpes dag'}
+  Index _ _       -> error "fml"
+  LinearIndex _ _ -> error "fml"
+  _ -> dag
+
+
+--like makeGraphE
 makeGraphF :: LabelledOpenFun env aenv a -> [NodeId] -> DirectedAcyclicGraph -> NodeId -> DirectedAcyclicGraph
-makeGraphF = undefined
+makeGraphF _ _ dag _= dag
 
 ($:) :: (NodeId, NodeType) -> IM.IntMap NodeType -> IM.IntMap NodeType
 ($:) (NodeId n, x) = IM.insert n x
 
 -- given a list representing "env", and one representing "a", make a list representing "env'"
-applyLHS :: LeftHandSide a env env' 
+applyLHS :: LeftHandSide a env env'
          -> [NodeId] -- env
          -> NodeId -- a
          -> [NodeId] -- env'
@@ -112,15 +119,18 @@ getNodeID [] _ = error "NewFusion/Solver.hs: empty environment"
 
 
 
+
+
+
 -- for Scans, we ignore the ' variant (which returns both the prefix sums and the final sum as two separate arrays of different dimensions) for now
 -- for Scans, 'False' is left-to-right (corresponding to 0 in the ILP)
-data NodeType = GenerateT | MapT NodeId | ZipWithT NodeId NodeId | FoldDimT NodeId 
+data NodeType = GenerateT | MapT NodeId | ZipWithT NodeId NodeId | FoldDimT NodeId
               | FoldFlatT NodeId | ScanDimT NodeId Bool | ScanFlatT NodeId Bool
               | PermuteT NodeId NodeId | BackpermuteT NodeId | UnfusableT NodeId
               | StencilT NodeId | Stencil2T NodeId NodeId
-  
 
--- The intmap contains a minimal description of node (NodeId i) at index i. 
+
+-- The intmap contains a minimal description of node (NodeId i) at index i.
 -- The list contains the fusion preventing edges.
 data DirectedAcyclicGraph = DAG {
   nodes :: IM.IntMap NodeType,
@@ -129,9 +139,12 @@ data DirectedAcyclicGraph = DAG {
 data ILPVar = Fusion NodeId   NodeId -- 0 means fused, 1 means not fused (not in the same fusion group)
             | Pi              NodeId -- the number of the fusion group this node is in, used for acyclicity
             | InputShape      NodeId -- -2 represents 'unknown' (backpermute output), -1 represents an even spread across all blocks, X>=0 means each threadblock holds every value along the innermost X dimensions (X=1 represents the current FoldDim approach, and X=0 means each threadblock holds only 1 value)
-            | OutputShape     NodeId 
+            | OutputShape     NodeId
             | InputDirection  NodeId -- 0 is ->, 1 is <-, 2 is 'unknown'
             | OutputDirection NodeId deriving (Eq, Ord, Show)
+
+
+
 
 
 -- The LPM `monad' is a State (LinearProgram variables values) ()
@@ -148,7 +161,7 @@ makeILP DAG{..} = execLPM $ do
 
   setDirection Min -- minimise cost function
   setObjective $ linCombination $ map (1,) fusionVars -- cost function, currently minimising the number of unfused edges
-  
+
   -- fusion variables
   mapM_ (\x -> varBds x 0 1) fusionVars
 
@@ -156,7 +169,7 @@ makeILP DAG{..} = execLPM $ do
   mapM_ (\x -> varBds x 0 (length nodes)) piVars
 
   -- fpe constraints
-  mapM_ (`varEq` 1) fpeVars 
+  mapM_ (`varEq` 1) fpeVars
 
   -- acyclicity contraints
   mapM_ makeAcyclicV (verticalVars ++ fpeVars)
@@ -190,7 +203,7 @@ makeILP DAG{..} = execLPM $ do
       ScanFlatT    y _ -> [(y, x)]
       PermuteT     y _ -> [(y, x)] -- can't fuse with the 'target array'
       BackpermuteT y   -> [(y, x)]
-      StencilT     _   -> [] -- [(y, x)]          
+      StencilT     _   -> [] -- [(y, x)]
       Stencil2T    _ _ -> [] -- [(y, x), (z, x)]
 
     -- given all the vertical fusion variables (where (x,y) means that the array x could be fused into the computation y),
@@ -269,7 +282,7 @@ makeILP DAG{..} = execLPM $ do
       leqTo (linCombination [(-IM.size nodes, Fusion x y), (-1, Pi y), ( 1, Pi x)]) 0 -- −N*f_{i,j} ≤ pi_y - pi_x
       leqTo (linCombination [(-IM.size nodes, Fusion x y), ( 1, Pi y), (-1, Pi x)]) 0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
     makeAcyclicH _ = ilpError
-    
+
 
     ilpError = error "A function expected '(Fusion x y)' but got something else in NewFusion/Solver.hs"
 

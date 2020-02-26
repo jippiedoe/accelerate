@@ -6,6 +6,7 @@ import Control.Monad.State
 import Data.Array.Accelerate.AST
 import Data.Array.Accelerate.Trafo.NewFusion.LetBind
 import Data.Array.Accelerate.Trafo.NewFusion.Solver
+import qualified Data.IntMap.Strict as IM
 
 doFusion :: Acc a -> FusedAcc a
 doFusion acc = fusedacc
@@ -29,7 +30,7 @@ letBindEverything :: OpenAcc env a -> LabelledOpenAcc env a
 letBindEverything acc = evalState (letBindAcc acc) 1
 
 makeFullGraph :: LabelledOpenAcc env a -> DirectedAcyclicGraph
-makeFullGraph acc = snd $ makeGraph acc [] undefined
+makeFullGraph acc = snd $ makeGraph acc [] $ DAG IM.empty []
 
 -- makes the ILP and calls the solver.
 makePartition :: DirectedAcyclicGraph -> [[NodeId]]

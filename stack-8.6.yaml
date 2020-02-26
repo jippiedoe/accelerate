@@ -7,6 +7,10 @@ packages:
 - .
 
 # extra-deps: []
+extra-deps:
+- git: https://github.com/dpvanbalen/glpk-hs
+  commit: 70153825f6081ff544b71cb771d345dba1238215
+- gasp-1.2.0.0@sha256:588f9d470ed8e51ff3819b496d5a5a2f41c55b613fee7f5c59da6271e73ef7d3,697
 
 # Override default flag values for local packages and extra-deps
 # flags: {}
@@ -29,6 +33,10 @@ packages:
 # arch: x86_64
 
 # Extra directories used by stack for building
-# extra-include-dirs: [/path/to/dir]
-# extra-lib-dirs: [/path/to/dir]
+extra-include-dirs:
+- C:\Users\dpvan\Documents\cs\thesis\glpk-4.65\w64
+- C:\Users\dpvan\Documents\cs\thesis\glpk-4.65\src
+extra-lib-dirs:
+- C:\Users\dpvan\Documents\cs\thesis\glpk-4.65\w64
+- C:\Users\dpvan\Documents\cs\thesis\glpk-4.65\src
 
