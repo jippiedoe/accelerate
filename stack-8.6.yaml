@@ -33,10 +33,6 @@ extra-deps:
 # arch: x86_64
 
 # Extra directories used by stack for building
-extra-include-dirs:
-- C:\Users\dpvan\Documents\cs\thesis\glpk-4.65\w64
-- C:\Users\dpvan\Documents\cs\thesis\glpk-4.65\src
-extra-lib-dirs:
-- C:\Users\dpvan\Documents\cs\thesis\glpk-4.65\w64
-- C:\Users\dpvan\Documents\cs\thesis\glpk-4.65\src
+#extra-include-dirs:
+#extra-lib-dirs:
 
