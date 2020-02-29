@@ -16,7 +16,8 @@ extra-deps:
 # flags: {}
 
 # Extra global and per-package GHC options
-# ghc-options: {}
+ghc-options:
+  "$locals": -threaded # needed for glpk? at least, the test/newfusion/main.hs test needs this, maybe actual usage won't
 
 # Extra package databases containing global packages
 # extra-package-dbs: []
