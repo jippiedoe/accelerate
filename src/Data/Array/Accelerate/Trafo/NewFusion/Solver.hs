@@ -45,9 +45,10 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
         )
   Aforeign n _ _ x ->
     ( n
-    , dag { nodes = map (\n' -> (n, UnfusableT n')) (getNodeIds env x) $++ nodes dag
-          , fpes  = map (, n) (getNodeIds env x) ++ fpes dag
-          }
+    , dag
+      { nodes = map (\n' -> (n, UnfusableT n')) (getNodeIds env x) $++ nodes dag
+      , fpes  = map (, n) (getNodeIds env x) ++ fpes dag
+      }
     )
   Acond n e acc1 acc2 ->
     let dagE       = makeGraphE e env dag n
@@ -62,14 +63,18 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
     let (nf, dagF) = makeGraphAF f env n dag
         (ng, dagG) = makeGraphAF g env nf dagF
     in  ( n
-        , dagG { nodes = (n, UnfusableT nf) $: nodes dagG
-               , fpes  = (n, nf) : (nf, ng) : map (, n) (getNodeIds env x) ++ fpes dagG
-               }
+        , dagG
+          { nodes = (n, UnfusableT nf) $: nodes dagG
+          , fpes  = (n, nf)
+                    :  (nf, ng)
+                    :  map (, n) (getNodeIds env x)
+                    ++ fpes dagG
+          }
         )
-  Use n _ -> (n, dag { nodes = (n, UnfusableT n) $: nodes dag })
+  Use n _ -> (n, dag { nodes = (n, GenerateT) $: nodes dag })
   Unit n e ->
     let dagE = makeGraphE e env dag n
-    in  (n, dagE { nodes = (n, UnfusableT n) $: nodes dagE })
+    in  (n, dagE { nodes = (n, GenerateT) $: nodes dagE })
   --TODO fuse reshape when possible
   Reshape n e x ->
     let dagE = makeGraphE e env dag n
@@ -221,14 +226,14 @@ getNodeId n e =
 data NodeType = GenerateT | MapT NodeId | ZipWithT NodeId NodeId | FoldDimT NodeId
               | FoldFlatT NodeId | ScanDimT NodeId Bool | ScanFlatT NodeId Bool
               | PermuteT NodeId NodeId | BackpermuteT NodeId | UnfusableT NodeId
-              | StencilT NodeId | Stencil2T NodeId NodeId
+              | StencilT NodeId | Stencil2T NodeId NodeId deriving Show
 
 
 -- The intmap contains a minimal description of node (NodeId i) at index i.
 -- The list contains the fusion preventing edges.
 data DirectedAcyclicGraph = DAG {
   nodes :: IM.IntMap NodeType,
-  fpes :: [(NodeId, NodeId)]}
+  fpes :: [(NodeId, NodeId)]} deriving Show
 
 data ILPVar = Fusion NodeId   NodeId -- 0 means fused, 1 means not fused (not in the same fusion group)
             | Pi              NodeId -- the number of the fusion group this node is in, used for acyclicity
@@ -250,8 +255,8 @@ makeILP DAG {..} = execLPM $ do
   let verticalVars   = map (uncurry Fusion) verticals
   let horizontalVars = map (uncurry Fusion) horizontals
   let fusionVars     = verticalVars ++ horizontalVars
-  let fpeVars        = map (uncurry Fusion) fpes
   let piVars         = map (Pi . fst) nodes'
+  let fpeVars = map (uncurry Fusion) (fpes ++ concatMap makeFPEs nodes')
 
   setDirection Min -- minimise cost function
   setObjective $ linCombination $ map (1, ) fusionVars -- cost function, currently minimising the number of unfused edges
@@ -268,6 +273,7 @@ makeILP DAG {..} = execLPM $ do
   -- acyclicity contraints
   mapM_ makeAcyclicV                      (verticalVars ++ fpeVars)
   mapM_ makeAcyclicH                      horizontalVars
+  mapM_ makeAcyclicFPE                    fpeVars
 
   -- nodetype-specific constraints:
   -- - input and output shape and direction variables
@@ -302,10 +308,10 @@ makeILP DAG {..} = execLPM $ do
 
   -- given all the vertical fusion variables (where (x,y) means that the array x could be fused into the computation y),
   -- produce a list of pairs of nodeIds that both consume the same array and could thus be fused horizontally.
-  -- TODO sort and remove duplicates
   makeHorizontals :: [(NodeId, NodeId)] -> [(NodeId, NodeId)]
   makeHorizontals =
-    map (\(x, y) -> if x < y then (x, y) else (y, x))
+    nub
+      . map (\(x, y) -> if x < y then (x, y) else (y, x))
       . concatMap carthesian
       . M.elems
       . M.fromListWith (++)
@@ -425,7 +431,7 @@ makeILP DAG {..} = execLPM $ do
   fusionShapeH _ = ilpError
 
 
-  makeAcyclicV, makeAcyclicH :: ILPVar -> LPM ILPVar Int ()
+  makeAcyclicV, makeAcyclicH, makeAcyclicFPE :: ILPVar -> LPM ILPVar Int ()
   makeAcyclicV (Fusion x y) = do
     leqTo (linCombination [(1, Fusion x y), (-1, Pi y), (1, Pi x)]) 0 -- f_{x,y} ≤ pi_y − pi_x   ==> precedence-preserving
     leqTo
@@ -442,6 +448,25 @@ makeILP DAG {..} = execLPM $ do
       0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
   makeAcyclicH _ = ilpError
 
+  makeAcyclicFPE (Fusion x y) =
+    geqTo (linCombination [(1, Pi y), (-1, Pi x)]) 0 -- moet strict groter zijn TODO
+  makeAcyclicFPE _ = ilpError
+
+  makeFPEs :: (NodeId, NodeType) -> [(NodeId, NodeId)]
+  makeFPEs (n, nodetype) = case nodetype of
+    MapT _         -> []
+    GenerateT      -> []
+    ZipWithT _ _   -> []
+    FoldDimT  _    -> []
+    FoldFlatT _    -> []
+    ScanDimT  _ _  -> []
+    ScanFlatT _ _  -> []
+    PermuteT  _ m  -> [(m, n)]
+    BackpermuteT _ -> []
+    UnfusableT   m -> [(m, n)]
+    StencilT     m -> [(m, n)]
+    Stencil2T m o  -> [(m, n), (o, n)]
+
 
   ilpError =
     error
@@ -450,6 +475,8 @@ makeILP DAG {..} = execLPM $ do
 
 callGLPK :: LP ILPVar Int -> IO Int
 callGLPK lp = do
+  print "ilp:"
+  print lp
   print "res1:"
   res1 <- glpSolveVars opt1 lp
   print res1

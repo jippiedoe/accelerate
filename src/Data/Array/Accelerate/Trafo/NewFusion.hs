@@ -21,6 +21,8 @@ dotesting :: OpenAcc env a -> IO (OpenAcc env a)
 dotesting acc = do print "newfusion start"
                    let lbacc = letBindEverything acc
                    let graph = makeFullGraph lbacc
+                   print "graph:"
+                   print graph
                    let lp    = makeILP graph
                    number <- callGLPK lp
                    print number --3
