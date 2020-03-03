@@ -19,9 +19,9 @@ letBindAcc (AST.OpenAcc pacc) = LabelledOpenAcc <$> case pacc of
   AST.Apair acc1 acc2            -> letBind acc1 $ \w1 var1 -> letBind (weaken w1 acc2) $ \w2 var2 ->
                                     Variable <$> getInc <*> (ArrayVarsPair <$> w2 $:> var1 <*> var2)
   AST.Anil                       -> (`Variable` ArrayVarsNil) <$> getInc
-  AST.Apply f acc                -> letBind acc $ \w var -> 
+  AST.Apply f acc                -> letBind acc $ \w var ->
                                     Apply <$> getInc <*> w $:> letBindAfun f <*> var
-  AST.Aforeign asm fun acc       -> letBind acc $ \_ var -> 
+  AST.Aforeign asm fun acc       -> letBind acc $ \_ var ->
                                     Aforeign <$> getInc <*> return asm <*> letBindAfun fun <*> var
   AST.Acond e left right         -> Acond <$> getInc <*> letBindExp e <*> letBindAcc left <*> letBindAcc right
   AST.Awhile cond fun acc        -> letBind acc $ \w var ->
@@ -45,7 +45,7 @@ letBindAcc (AST.OpenAcc pacc) = LabelledOpenAcc <$> case pacc of
   AST.Fold1 f acc                -> letBind acc $ \w var ->
                                     Fold1 <$> getInc <*> w $:>letBindFun f <*> var
   AST.FoldSeg  f e acc seg       -> letBind acc $ \w1 var1 -> letBind (weaken w1 seg) $ \w2 var2 ->
-                                    FoldSeg <$> getInc <*> w2 . w1 $:> letBindFun f 
+                                    FoldSeg <$> getInc <*> w2 . w1 $:> letBindFun f
                                     <*> w2 . w1 $:> letBindExp e <*> w2 $:> var1 <*> var2
   AST.Fold1Seg f   acc seg       -> letBind acc $ \w1 var1 -> letBind (weaken w1 seg) $ \w2 var2 ->
                                     Fold1Seg <$> getInc <*> w2 . w1 $:> letBindFun f <*> w2 $:> var1 <*> var2
@@ -62,14 +62,14 @@ letBindAcc (AST.OpenAcc pacc) = LabelledOpenAcc <$> case pacc of
   AST.Scanr1 f acc               -> letBind acc $ \w var ->
                                     Scanr1 <$> getInc <*> w $:> letBindFun f <*> var
   AST.Permute f acc1 g acc2      -> letBind acc1 $ \w1 var1 -> letBind (weaken w1 acc2) $ \w2 var2 ->
-                                    Permute <$> getInc <*> w2 . w1 $:> letBindFun f <*> w2 $:> var1 
+                                    Permute <$> getInc <*> w2 . w1 $:> letBindFun f <*> w2 $:> var1
                                                        <*> w2 . w1 $:> letBindFun g <*>        var2
   AST.Backpermute e f acc        -> letBind acc $ \w var ->
                                     Backpermute <$> getInc <*> w $:> letBindExp e <*> w $:> letBindFun f <*> var
   AST.Stencil f b acc            -> letBind acc $ \w var ->
                                     Stencil <$> getInc <*> w $:> letBindFun f <*> w $:> letBindBoundary b <*> var
   AST.Stencil2 f b1 acc1 b2 acc2 -> letBind acc1 $ \w1 var1 -> letBind (weaken w1 acc2) $ \w2 var2 ->
-                                    Stencil2 <$> getInc <*> w2 . w1 $:> letBindFun f <*> w2 . w1 $:> letBindBoundary b1 
+                                    Stencil2 <$> getInc <*> w2 . w1 $:> letBindFun f <*> w2 . w1 $:> letBindBoundary b1
                                     <*> w2 $:> var1 <*> w2 . w1 $:> letBindBoundary b2 <*> var2
 
 
@@ -92,7 +92,7 @@ makeLHSBV = makeLHSBV' . arraysRepr where
   makeLHSBV' a = case a of
     ArraysRunit -> Exists $ LHSBV (LeftHandSideWildcard ArraysRunit) ArrayVarsNil
     ArraysRarray -> Exists $ LHSBV LeftHandSideArray (ArrayVarsArray $ ArrayVar ZeroIdx)
-    ArraysRpair left right -> case makeLHSBV' left of 
+    ArraysRpair left right -> case makeLHSBV' left of
       Exists  (LHSBV leftlhs  leftvar) -> case makeLHSBV' right of
         Exists (LHSBV rightlhs rightvar) ->
           Exists $ LHSBV (LeftHandSidePair leftlhs rightlhs) (ArrayVarsPair (weakenWithLHS rightlhs `weaken` leftvar) rightvar)

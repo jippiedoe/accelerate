@@ -32,7 +32,7 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
     uncurry (makeGraph body) . first (applyLHS lhs env) $ makeGraph bnd env dag
   Variable n x ->
     ( n
-    , dag { nodes = map (\n' -> (n, MapT n')) (getNodeIds env x) $++ nodes dag }
+    , dag { nodes = map (\n' -> (n, VarT n')) (getNodeIds env x) $++ nodes dag }
     )
   Apply n f x ->
     let (_, dag') = makeGraphAF f env n dag
@@ -164,15 +164,49 @@ makeGraphE
   -> DirectedAcyclicGraph
 makeGraphE expr env dag n = case expr of
   Index (LabelledOpenAcc (Variable _ a)) sh ->
-    let dag' = makeGraphE sh env dag n
+    let dag' = makeGraphE1 sh
     in  dag' { fpes = (getNodeId env a, n) : fpes dag' }
   LinearIndex (LabelledOpenAcc (Variable _ a)) i ->
-    let dag' = makeGraphE i env dag n
+    let dag' = makeGraphE1 i
     in  dag' { fpes = (getNodeId env a, n) : fpes dag' }
-  Index       _ _ -> error "fml"
-  LinearIndex _ _ -> error "fml"
-  _               -> dag
+  Index _ _ -> error "please float array computations out of expressions"
+  LinearIndex _ _ -> error "please float array computations out of expressions"
 
+  Let         bnd body -> makeGraphE2 bnd body
+  Tuple tup            -> makeGraphT tup dag
+  Prj       _  t       -> makeGraphE1 t
+  IndexCons sh sz      -> makeGraphE2 sh sz
+  IndexHead sh         -> makeGraphE1 sh
+  IndexTail sh         -> makeGraphE1 sh
+  IndexSlice _ ix sh   -> makeGraphE2 ix sh
+  IndexFull  _ ix sl   -> makeGraphE2 ix sl
+  ToIndex   sh ix      -> makeGraphE2 sh ix
+  FromIndex sh ix      -> makeGraphE2 sh ix
+  Cond  p t e          -> makeGraphE p env (makeGraphE2 t e) n
+  While p f x -> makeGraphF p env (makeGraphF f env (makeGraphE1 x) n) n
+  PrimApp _ x          -> makeGraphE1 x
+  Shape     _          -> dag --shape information can be inferred without constraints on fusion? TODO check
+  ShapeSize sh         -> makeGraphE1 sh
+  Intersect s t        -> makeGraphE2 s t
+  Union     s t        -> makeGraphE2 s t
+  Foreign _ f e        -> makeGraphF f env (makeGraphE1 e) n
+  Coerce e             -> makeGraphE1 e
+  _                    -> dag -- Var, Const, Undef, IndexNil, IndexAny, PrimConst,
+ where
+  makeGraphT
+    :: Tuple (LabelledOpenExp env aenv) t
+    -> DirectedAcyclicGraph
+    -> DirectedAcyclicGraph
+  makeGraphT NilTup        dag' = dag'
+  makeGraphT (SnocTup t e) dag' = makeGraphT t $ makeGraphE e env dag' n
+  -- just writing out these 3 was easier than making a more general solution
+  makeGraphE1 :: LabelledOpenExp eenv aenv e -> DirectedAcyclicGraph
+  makeGraphE1 e = makeGraphE e env dag n
+  makeGraphE2
+    :: LabelledOpenExp eenv aenv e
+    -> LabelledOpenExp fenv aenv f
+    -> DirectedAcyclicGraph
+  makeGraphE2 e f = makeGraphE e env (makeGraphE f env dag n) n
 
 --like makeGraphE
 makeGraphF
@@ -181,7 +215,8 @@ makeGraphF
   -> DirectedAcyclicGraph
   -> NodeId
   -> DirectedAcyclicGraph
-makeGraphF _ _ dag _ = dag
+makeGraphF (Lam  f) = makeGraphF f
+makeGraphF (Body b) = makeGraphE b
 
 ($:) :: (NodeId, NodeType) -> IM.IntMap NodeType -> IM.IntMap NodeType
 ($:) (NodeId n, x) = IM.insert n x
@@ -223,10 +258,12 @@ getNodeId n e =
 
 -- for Scans, we ignore the ' variant (which returns both the prefix sums and the final sum as two separate arrays of different dimensions) for now
 -- for Scans, 'False' is left-to-right (corresponding to 0 in the ILP)
-data NodeType = GenerateT | MapT NodeId | ZipWithT NodeId NodeId | FoldDimT NodeId
-              | FoldFlatT NodeId | ScanDimT NodeId Bool | ScanFlatT NodeId Bool
-              | PermuteT NodeId NodeId | BackpermuteT NodeId | UnfusableT NodeId
-              | StencilT NodeId | Stencil2T NodeId NodeId deriving Show
+data NodeType = VarT NodeId | GenerateT | MapT NodeId | ZipWithT NodeId NodeId
+              | FoldDimT NodeId | FoldFlatT NodeId | ScanDimT NodeId Bool
+              | ScanFlatT NodeId Bool | PermuteT NodeId NodeId
+              | BackpermuteT NodeId | UnfusableT NodeId | StencilT NodeId
+              | Stencil2T NodeId NodeId
+                deriving Show
 
 
 -- The intmap contains a minimal description of node (NodeId i) at index i.
@@ -282,6 +319,8 @@ makeILP DAG {..} = execLPM $ do
   mapM_ fusionShapeV                      verticalVars
   mapM_ fusionShapeH                      horizontalVars
 
+  -- constrain all variables to be integers
+  mapM_ (`setVarKind` IntVar)             (fusionVars ++ piVars ++ fpeVars)
  where
   nodes' :: [(NodeId, NodeType)]
   nodes' = map (first NodeId) (IM.assocs nodes)
@@ -296,6 +335,7 @@ makeILP DAG {..} = execLPM $ do
     UnfusableT _   -> []
     GenerateT      -> []
     MapT y         -> [(y, x)]
+    VarT y         -> [(y, x)]
     ZipWithT y z   -> [(y, x), (z, x)]
     FoldDimT  y    -> [(y, x)]
     FoldFlatT y    -> [(y, x)]
@@ -329,6 +369,13 @@ makeILP DAG {..} = execLPM $ do
       varBds (OutputDirection n) 0 2
       varGeq (OutputShape n) (-2)
     MapT _ -> do
+      varBds (OutputDirection n) 0 1
+      varGeq (OutputShape n) (-2)
+      equalTo
+        (linCombination [(-1, OutputDirection n), (1, InputDirection n)])
+        0
+      equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
+    VarT _ -> do
       varBds (OutputDirection n) 0 1
       varGeq (OutputShape n) (-2)
       equalTo
@@ -449,11 +496,12 @@ makeILP DAG {..} = execLPM $ do
   makeAcyclicH _ = ilpError
 
   makeAcyclicFPE (Fusion x y) =
-    geqTo (linCombination [(1, Pi y), (-1, Pi x)]) 0 -- moet strict groter zijn TODO
+    geqTo (linCombination [(1, Pi y), (-1, Pi x)]) 1 -- strictly bigger than 0 in integers
   makeAcyclicFPE _ = ilpError
 
   makeFPEs :: (NodeId, NodeType) -> [(NodeId, NodeId)]
   makeFPEs (n, nodetype) = case nodetype of
+    VarT _         -> []
     MapT _         -> []
     GenerateT      -> []
     ZipWithT _ _   -> []
@@ -475,8 +523,8 @@ makeILP DAG {..} = execLPM $ do
 
 callGLPK :: LP ILPVar Int -> IO Int
 callGLPK lp = do
-  print "ilp:"
-  print lp
+  print "ilp omitted"
+  --print lp
   print "res1:"
   res1 <- glpSolveVars opt1 lp
   print res1
