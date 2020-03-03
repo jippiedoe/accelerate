@@ -84,7 +84,7 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
   Unit n e ->
     let dagE = makeGraphE e env dag n
     in  (n, dagE { nodes = (n, GenerateT) $: nodes dagE })
-  --TODO fuse reshape when possible
+  --TODO figure out how Reshape works in the backend, or where it dissapears
   Reshape n e x ->
     let dagE = makeGraphE e env dag n
     in  ( n
@@ -96,7 +96,9 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
     let dagE = makeGraphE e env dag n
         dagF = makeGraphF f env dagE n
     in  (n, dagF { nodes = (n, GenerateT) $: nodes dagF })
-  --TODO slice
+  Slice n _ x e -> --TODO ignore 'slice type information'?
+    let dagE = makeGraphE e env dag n
+    in  (n, dagE { nodes = (n, BackpermuteT (getNodeId env x)) $: nodes dagE })
   Map n f x ->
     let dagF = makeGraphF f env dag n
     in  (n, dagF { nodes = (n, MapT (getNodeId env x)) $: nodes dagF })
@@ -117,7 +119,49 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
     -> let dagF = makeGraphF f env dag n
            dagE = makeGraphE e env dagF n
        in  (n, dagE { nodes = (n, FoldDimT (getNodeId env x)) $: nodes dagE })
-  -- TODO fold1, foldSeg, fold1Seg
+  Fold1 n f (x :: ArrayVars aenv (Array (sh:.Int) e))
+    | Just Refl <- matchShapeType @sh @Z
+    -> let dagF = makeGraphF f env dag n
+       in  (n, dagF { nodes = (n, FoldFlatT (getNodeId env x)) $: nodes dagF })
+    | otherwise
+    -> let dagF = makeGraphF f env dag n
+       in  (n, dagF { nodes = (n, FoldDimT (getNodeId env x)) $: nodes dagF })
+  FoldSeg n f e (x :: ArrayVars aenv (Array (sh:.Int) e)) s
+    | Just Refl <- matchShapeType @sh @Z
+    -> let dagF = makeGraphF f env dag n
+           dagE = makeGraphE e env dagF n
+       in  ( n
+           , dagE
+             { nodes = (n, FoldSegFlatT (getNodeId env x) (getNodeId env s))
+                         $: nodes dagE
+             }
+           )
+    | otherwise
+    -> let dagF = makeGraphF f env dag n
+           dagE = makeGraphE e env dagF n
+       in  ( n
+           , dagE
+             { nodes = (n, FoldSegDimT (getNodeId env x) (getNodeId env s))
+                         $: nodes dagE
+             }
+           )
+  Fold1Seg n f (x :: ArrayVars aenv (Array (sh:.Int) e)) s
+    | Just Refl <- matchShapeType @sh @Z
+    -> let dagF = makeGraphF f env dag n
+       in  ( n
+           , dagF
+             { nodes = (n, FoldSegFlatT (getNodeId env x) (getNodeId env s))
+                         $: nodes dagF
+             }
+           )
+    | otherwise
+    -> let dagF = makeGraphF f env dag n
+       in  ( n
+           , dagF
+             { nodes = (n, FoldSegDimT (getNodeId env x) (getNodeId env s))
+                         $: nodes dagF
+             }
+           )
   Scanl n f e (x :: ArrayVars aenv (Array (sh:.Int) e))
     | Just Refl <- matchShapeType @sh @Z
     -> let
@@ -133,9 +177,49 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
          dagE = makeGraphE e env dagF n
        in
          ( n
-         , dagE { nodes = (n, ScanFlatT (getNodeId env x) False) $: nodes dagE }
+         , dagE { nodes = (n, ScanDimT (getNodeId env x) False) $: nodes dagE }
          )
-  -- TODO scanl', scanl1, scanr, scanr', scanr1
+  Scanl1 n f (x :: ArrayVars aenv (Array (sh:.Int) e))
+    | Just Refl <- matchShapeType @sh @Z
+    -> let dagF = makeGraphF f env dag n
+       in  ( n
+           , dagF { nodes = (n, ScanFlatT (getNodeId env x) False) $: nodes dagF
+                  }
+           )
+    | otherwise
+    -> let dagF = makeGraphF f env dag n
+       in  ( n
+           , dagF { nodes = (n, ScanDimT (getNodeId env x) False) $: nodes dagF
+                  }
+           )
+  Scanr n f e (x :: ArrayVars aenv (Array (sh:.Int) e))
+    | Just Refl <- matchShapeType @sh @Z
+    -> let
+         dagF = makeGraphF f env dag n
+         dagE = makeGraphE e env dagF n
+       in
+         ( n
+         , dagE { nodes = (n, ScanFlatT (getNodeId env x) True) $: nodes dagE }
+         )
+    | otherwise
+    -> let dagF = makeGraphF f env dag n
+           dagE = makeGraphE e env dagF n
+       in  ( n
+           , dagE { nodes = (n, ScanDimT (getNodeId env x) True) $: nodes dagE }
+           )
+  Scanr1 n f (x :: ArrayVars aenv (Array (sh:.Int) e))
+    | Just Refl <- matchShapeType @sh @Z
+    -> let dagF = makeGraphF f env dag n
+       in  ( n
+           , dagF { nodes = (n, ScanFlatT (getNodeId env x) True) $: nodes dagF
+                  }
+           )
+    | otherwise
+    -> let dagF = makeGraphF f env dag n
+       in  ( n
+           , dagF { nodes = (n, ScanDimT (getNodeId env x) True) $: nodes dagF }
+           )
+  -- TODO scanl', scanr' are annoying, as they really already represent a vertically fused unit of a scan and slices
   Permute n f x g y ->
     let dagF = makeGraphF f env dag n
         dagG = makeGraphF g env dagF n
@@ -150,8 +234,16 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
     let dagE = makeGraphE e env dag n
         dagF = makeGraphF f env dagE n
     in  (n, dagF { nodes = (n, BackpermuteT (getNodeId env x)) $: nodes dagF })
-  -- TODO stencil, stencil2
-  _ -> undefined
+  Stencil n f b x ->
+    let dagF = makeGraphF f env dag n
+        dagB = makeGraphB b env dagF n
+    in  (n, dagB { nodes = (n, StencilT (getNodeId env x)) $: nodes dagB })
+  Stencil2 n f bx x by y ->
+    let dagF  = makeGraphF f env dag n
+        dagBx = makeGraphB bx env dagF n
+        dagBy = makeGraphB by env dagBx n
+    in  (n, dagBy { nodes = (n, StencilT (getNodeId env x)) $: nodes dagBy })
+  _ -> error "I don't like scanl' and scanr'"
 
 
 makeGraphAF
@@ -227,6 +319,17 @@ makeGraphF
 makeGraphF (Lam  f) = makeGraphF f
 makeGraphF (Body b) = makeGraphE b
 
+makeGraphB
+  :: PreBoundary LabelledOpenAcc env a
+  -> [NodeId]
+  -> DirectedAcyclicGraph
+  -> NodeId
+  -> DirectedAcyclicGraph
+makeGraphB (Function f) = makeGraphF f
+makeGraphB _            = const const
+
+
+
 ($:) :: (NodeId, NodeType) -> IM.IntMap NodeType -> IM.IntMap NodeType
 ($:) (NodeId n, x) = IM.insert n x
 
@@ -268,7 +371,8 @@ getNodeId n e =
 -- for Scans, we ignore the ' variant (which returns both the prefix sums and the final sum as two separate arrays of different dimensions) for now
 -- for Scans, 'False' is left-to-right (corresponding to 0 in the ILP)
 data NodeType = VarT NodeId | GenerateT | MapT NodeId | ZipWithT NodeId NodeId
-              | FoldDimT NodeId | FoldFlatT NodeId | ScanDimT NodeId Bool
+              | FoldDimT NodeId | FoldFlatT NodeId | FoldSegDimT NodeId NodeId
+              | FoldSegFlatT NodeId NodeId | ScanDimT NodeId Bool
               | ScanFlatT NodeId Bool | PermuteT NodeId NodeId
               | BackpermuteT NodeId | UnfusableT NodeId | StencilT NodeId
               | Stencil2T NodeId NodeId
@@ -341,19 +445,21 @@ makeILP DAG {..} = execLPM $ do
   -- All the fusion variables for vertical fusion, (x,y) means that y consumes x
   makeVerticals :: (NodeId, NodeType) -> [(NodeId, NodeId)]
   makeVerticals (x, nodetype) = case nodetype of
-    UnfusableT _   -> []
-    GenerateT      -> []
-    MapT y         -> [(y, x)]
-    VarT y         -> [(y, x)]
-    ZipWithT y z   -> [(y, x), (z, x)]
-    FoldDimT  y    -> [(y, x)]
-    FoldFlatT y    -> [(y, x)]
-    ScanDimT  y _  -> [(y, x)]
-    ScanFlatT y _  -> [(y, x)]
-    PermuteT  y _  -> [(y, x)] -- can't fuse with the 'target array'
-    BackpermuteT y -> [(y, x)]
-    StencilT     _ -> [] -- [(y, x)]
-    Stencil2T _ _  -> [] -- [(y, x), (z, x)]
+    UnfusableT _     -> []
+    GenerateT        -> []
+    MapT y           -> [(y, x)]
+    VarT y           -> [(y, x)]
+    ZipWithT y z     -> [(y, x), (z, x)]
+    FoldDimT  y      -> [(y, x)]
+    FoldFlatT y      -> [(y, x)]
+    FoldSegDimT  y _ -> [(y, x)]
+    FoldSegFlatT y _ -> [(y, x)]
+    ScanDimT     y _ -> [(y, x)]
+    ScanFlatT    y _ -> [(y, x)]
+    PermuteT     y _ -> [(y, x)] -- can't fuse with the 'target array'
+    BackpermuteT y   -> [(y, x)]
+    StencilT     _   -> [] -- [(y, x)]
+    Stencil2T _ _    -> [] -- [(y, x), (z, x)]
 
   -- given all the vertical fusion variables (where (x,y) means that the array x could be fused into the computation y),
   -- produce a list of pairs of nodeIds that both consume the same array and could thus be fused horizontally.
@@ -406,6 +512,16 @@ makeILP DAG {..} = execLPM $ do
         0
       equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 1
     FoldFlatT _ -> do
+      varBds (InputDirection n) 0 2 -- the output of a FoldFlat is just one element, so no variables needed
+      varEq (InputShape n) (-1)
+    FoldSegDimT _ _ -> do
+      varBds (OutputDirection n) 0 2
+      varBds (OutputShape n)     0 maxFoldScanDims
+      equalTo
+        (linCombination [(-1, OutputDirection n), (1, InputDirection n)])
+        0
+      equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 1
+    FoldSegFlatT _ _ -> do
       varBds (InputDirection n) 0 2 -- the output of a FoldFlat is just one element, so no variables needed
       varEq (InputShape n) (-1)
     ScanDimT _ b -> do
@@ -510,19 +626,21 @@ makeILP DAG {..} = execLPM $ do
 
   makeFPEs :: (NodeId, NodeType) -> [(NodeId, NodeId)]
   makeFPEs (n, nodetype) = case nodetype of
-    VarT _         -> []
-    MapT _         -> []
-    GenerateT      -> []
-    ZipWithT _ _   -> []
-    FoldDimT  _    -> []
-    FoldFlatT _    -> []
-    ScanDimT  _ _  -> []
-    ScanFlatT _ _  -> []
-    PermuteT  _ m  -> [(m, n)]
-    BackpermuteT _ -> []
-    UnfusableT   m -> [(m, n)]
-    StencilT     m -> [(m, n)]
-    Stencil2T m o  -> [(m, n), (o, n)]
+    VarT _           -> []
+    MapT _           -> []
+    GenerateT        -> []
+    ZipWithT _ _     -> []
+    FoldDimT  _      -> []
+    FoldFlatT _      -> []
+    FoldSegDimT  _ s -> [(s, n)]
+    FoldSegFlatT _ s -> [(s, n)]
+    ScanDimT     _ _ -> []
+    ScanFlatT    _ _ -> []
+    PermuteT     _ m -> [(m, n)]
+    BackpermuteT _   -> []
+    UnfusableT   m   -> [(m, n)]
+    StencilT     m   -> [(m, n)]
+    Stencil2T m o    -> [(m, n), (o, n)]
 
 
   ilpError =
