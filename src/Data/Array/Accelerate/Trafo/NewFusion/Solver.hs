@@ -6,8 +6,15 @@
 {-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE TypeOperators         #-}
 
-module Data.Array.Accelerate.Trafo.NewFusion.Solver {- (export list) -}
-                                                    where
+module Data.Array.Accelerate.Trafo.NewFusion.Solver
+  ( makeGraph
+  , DirectedAcyclicGraph(..)
+  , makeILP
+  , callGLPK
+  , callGLPKTest
+  , groupNodes
+  )
+where
 
 import           Data.Array.Accelerate.Trafo.NewFusion.AST
                                          hiding ( PreFusedOpenAcc(..) )
@@ -21,6 +28,8 @@ import           Data.LinearProgram
 import           Data.Array.Accelerate.Analysis.Match
 import           Data.Array.Accelerate.Array.Sugar
 import           Data.List
+import           Data.Function
+
 
 makeGraph
   :: LabelledOpenAcc aenv a
@@ -521,8 +530,8 @@ makeILP DAG {..} = execLPM $ do
       "A function expected '(Fusion x y)' but got something else in NewFusion/Solver.hs"
 
 
-callGLPK :: LP ILPVar Int -> IO Int
-callGLPK lp = do
+callGLPKTest :: LP ILPVar Int -> IO Int
+callGLPKTest lp = do
   print "ilp omitted"
   --print lp
   print "res1:"
@@ -536,63 +545,20 @@ callGLPK lp = do
   opt1 = simplexDefaults
   opt2 = mipDefaults
 
+-- the doubles in the return type are always whole numbers, but glpk-hs just always returns this
+callGLPK :: LP ILPVar Int -> IO (M.Map ILPVar Double)
+callGLPK lp = do
+  (_, x) <- glpSolveVars mipDefaults lp
+  let Just (_, m) = x -- panics if something went wrong
+  return m
 
-
-
--- data location options:
-{-
-scanDim input = scanDim output = foldDim input:  each threadblock has the innermost X dims
-foldDim output                                :  each threadblock has the innermost (X-1) dims
-
-scanAll input = scanAll output = foldAll input:  all values spread evenly (in order) across threadBLOCKS
-foldAll output                                :  there is only 1 value, it's at 0
-
-
-To allow more, maybe give folddim the option to have an arbitrary number of innermost dimensions per threadblock,
-and output one less dimension per threadblock. Cost function should make sure to keep this within reason.
-
-X should be part of the ILP
-(if it's difficult otherwise, could make X=0 a 'magic number' representing the foldAll input
-  then a single linear number is able to summarise the location of data of a multidim array)
--}
-
-
-
-
-
-
-
-
-
-
-
-{- ILP variables:
-
-x_{i,j} in {0,1} -> nodes i,j fused or not fused
-  not for each pair: 'unrelated' nodes have no variable - unless we want to attach weight to them
-  - connected nodes have the vertical/diagonal condition: can only be fused if the intermediate result is of consistent shape
-  - sibling nodes have the horizontal condition: can only be fused if the inputshape is consistent
-
-for acyclicity:
-pi_i in Z -> node i is in cluster n
-
-(for cost model: --this was in Amos Robinson
-c_i in {0,1} -> the output of i is `internal' in the cluster pi_i)
-
-for Accelerate:
-each x_i has an associated y_i representing the INPUT shape and a z_i representing the OUPUT shape: see X in foldDim discussion. 0 means 'like foldAll' and -1 means 'unknown shape' (see backpermute)
-Also a lin_i and lout_i, for left-to-right or right-to-left (see scans).
-
-
-
-ILP constraints:
-
-1 ≤ pi_j - pi_i
-
-x_{i,j} = 1 (for fusion-preventing edges from i to j)
-
-(a condition for c_i)
-
-for Accelerate:
-A bunch of rules relating the shapes to the x_i's (if node j is a map, -max*x_{i,j} ≤ y_i-y_j ≤ max*x_{i,j})
--}
+groupNodes :: M.Map ILPVar Double -> [[NodeId]]
+groupNodes =
+  map (map ((\(Pi n) -> n) . fst))
+    . sortBy (compare `on` (snd . head))
+    . groupBy ((==) @Int `on` (round . snd))
+    . filter (isPi . fst)
+    . M.assocs
+ where
+  isPi (Pi _) = True
+  isPi _      = False

@@ -7,13 +7,14 @@ import Data.Array.Accelerate.AST
 import Data.Array.Accelerate.Trafo.NewFusion.LetBind
 import Data.Array.Accelerate.Trafo.NewFusion.Solver
 import qualified Data.IntMap.Strict as IM
+import System.IO.Unsafe
 
 doFusion :: Acc a -> FusedAcc a
 doFusion acc = fusedacc
   where
     letboundacc = letBindEverything acc
     graph = makeFullGraph letboundacc
-    partition = orderPartition graph $ makePartition graph
+    partition = makePartition graph
     groupedacc = rewriteAST letboundacc partition
     fusedacc = finalizeFusion groupedacc
 
@@ -24,7 +25,7 @@ dotesting acc = do print "newfusion start"
                    print "graph:"
                    print graph
                    let lp    = makeILP graph
-                   number <- callGLPK lp
+                   number <- callGLPKTest lp
                    print number --3
                    return acc
 
@@ -34,12 +35,8 @@ letBindEverything acc = evalState (letBindAcc acc) 1
 makeFullGraph :: LabelledOpenAcc env a -> DirectedAcyclicGraph
 makeFullGraph acc = snd $ makeGraph acc [] $ DAG IM.empty []
 
--- makes the ILP and calls the solver.
 makePartition :: DirectedAcyclicGraph -> [[NodeId]]
-makePartition = undefined
-
-orderPartition :: DirectedAcyclicGraph -> [[NodeId]] -> [[NodeId]]
-orderPartition = undefined
+makePartition = groupNodes . unsafePerformIO . callGLPK . makeILP
 
 rewriteAST :: LabelledOpenAcc aenv a -> [[NodeId]] -> GroupedLabelledAcc aenv a
 rewriteAST = undefined
