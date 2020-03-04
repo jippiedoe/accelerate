@@ -144,11 +144,14 @@ letBind
      -> State Int (PreLabelledAcc LabelledOpenAcc env' b)
      )
   -> State Int (PreLabelledAcc LabelledOpenAcc env b)
-letBind acc cont = do
-  acc' <- letBindAcc acc
-  case makeLHSBV acc' of
-    Exists (LHSBV lhs var) ->
-      Alet lhs acc' . LabelledOpenAcc <$> cont (weakenWithLHS lhs) (return var)
+letBind acc cont = case acc of -- test if 'acc' is already a variable, and return the trivial answer
+  AST.OpenAcc (AST.Avar (ArrayVar idx)) ->
+    cont id $ return $ ArrayVarsArray $ ArrayVar idx
+  x -> do
+    acc' <- letBindAcc x
+    case makeLHSBV acc' of
+      Exists (LHSBV lhs var) ->
+        Alet lhs acc' . LabelledOpenAcc <$> cont (weakenWithLHS lhs) (return var)
 
 makeLHSBV :: HasArraysRepr f => f aenv a -> Exists (LHSBoundVar a env)
 makeLHSBV = makeLHSBV' . arraysRepr where
@@ -224,7 +227,8 @@ letBindBoundary (Function f) = Function <$> letBindFun f
 
 
 
-
-infix 5 $:> -- Just an operator which makes letBindAcc a bit more concise. The priority is purposely between (.) and (<$>)/(<*>)
+-- Just an operator which makes letBindAcc a bit more concise.
+-- The priority is purposely between (.) and (<$>)/(<*>). Read as "apply ($) the weakening (:>)"
+infix 5 $:>
 ($:>) :: (Functor f, Sink s) => env :> env' -> f (s env a) -> f (s env' a)
 w $:> x = weaken w <$> x

@@ -4,12 +4,12 @@
 
 
 module Data.Array.Accelerate.Trafo.NewFusion.AST (
-  NodeId (..), 
+  NodeId (..),
   PreLabelledAcc (..),
   LabelledOpenAcc (..),
-  LabelledAcc, 
+  LabelledAcc,
   ArrayVars (..),
-  GroupedLabelledAcc (..), 
+  GroupedLabelledAcc (..),
   PreFusedOpenAcc (..),
   FusedOpenAcc,
   FusedAcc,
@@ -24,7 +24,7 @@ import Data.Array.Accelerate.Array.Representation     (SliceIndex(..))
 import Data.Array.Accelerate.AST                      hiding ( PreOpenAcc(..), OpenAcc(..), Acc )
 import qualified Data.Array.Accelerate.AST            as AST
 
-   
+
 newtype NodeId = NodeId Int deriving (Eq, Show, Ord)
 
 type LabelledAcc = LabelledOpenAcc ()
@@ -43,31 +43,31 @@ type FusedOpenAcc = PreFusedOpenAcc UnFused
 data Fused
 data UnFused
 data PreFusedOpenAcc single aenv a where
-  RootOfFusionTree      :: PreFusedOpenAcc Fused    aenv a 
+  RootOfFusionTree      :: PreFusedOpenAcc Fused    aenv a
                         -> PreFusedOpenAcc UnFused aenv a
 
   Multiple              :: AST.PreOpenAcc (PreFusedOpenAcc UnFused) aenv a
                         -> PreFusedOpenAcc UnFused                  aenv a
 
-  LeafOfFusionTree      :: AST.OpenAcc                aenv a 
+  LeafOfFusionTree      :: AST.OpenAcc                aenv a
                         -> PreFusedOpenAcc Fused aenv a
-  
+
   Vertical              ::
     { lhsV              :: LeftHandSide a aenv benv
     , innerV            :: PreFusedOpenAcc Fused aenv a
     , outerV            :: PreFusedOpenAcc Fused benv b
     }                   -> PreFusedOpenAcc Fused aenv b
-  
-  Horizontal            :: 
+
+  Horizontal            ::
     { leftH             :: PreFusedOpenAcc Fused aenv  a
-    , rightH            :: PreFusedOpenAcc Fused aenv    b 
+    , rightH            :: PreFusedOpenAcc Fused aenv    b
     }                   -> PreFusedOpenAcc Fused aenv (a,b)
-  
+
   Diagonal              ::
     { lhsD              :: LeftHandSide a aenv benv
     , firstD            :: PreFusedOpenAcc Fused aenv  a
-    , secondD           :: PreFusedOpenAcc Fused benv    b 
-    }                   -> PreFusedOpenAcc Fused aenv (a,b) 
+    , secondD           :: PreFusedOpenAcc Fused benv    b
+    }                   -> PreFusedOpenAcc Fused aenv (a,b)
 
 
 

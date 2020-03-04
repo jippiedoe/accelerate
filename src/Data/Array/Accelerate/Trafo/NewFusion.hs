@@ -25,8 +25,9 @@ dotesting acc = do print "newfusion start"
                    print "graph:"
                    print graph
                    let lp    = makeILP graph
-                   number <- callGLPKTest lp
-                   print number --3
+                   callGLPKTest lp
+                   solu <- callGLPK lp
+                   print $ groupNodes solu
                    return acc
 
 letBindEverything :: OpenAcc env a -> LabelledOpenAcc env a

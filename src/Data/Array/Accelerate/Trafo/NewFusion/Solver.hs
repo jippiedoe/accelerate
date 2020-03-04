@@ -29,7 +29,7 @@ import           Data.Array.Accelerate.Analysis.Match
 import           Data.Array.Accelerate.Array.Sugar
 import           Data.List
 import           Data.Function
-
+import Debug.Trace
 
 makeGraph
   :: LabelledOpenAcc aenv a
@@ -242,7 +242,7 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
     let dagF  = makeGraphF f env dag n
         dagBx = makeGraphB bx env dagF n
         dagBy = makeGraphB by env dagBx n
-    in  (n, dagBy { nodes = (n, StencilT (getNodeId env x)) $: nodes dagBy })
+    in  (n, dagBy { nodes = (n, Stencil2T (getNodeId env x) (getNodeId env y)) $: nodes dagBy })
   _ -> error "I don't like scanl' and scanr'"
 
 
@@ -292,7 +292,7 @@ makeGraphE expr env dag n = case expr of
   Union     s t        -> makeGraphE2 s t
   Foreign _ f e        -> makeGraphF f env (makeGraphE1 e) n
   Coerce e             -> makeGraphE1 e
-  _                    -> dag -- Var, Const, Undef, IndexNil, IndexAny, PrimConst,
+  _                    -> dag -- Var, Const, Undef, IndexNil, IndexAny, PrimConst
  where
   makeGraphT
     :: Tuple (LabelledOpenExp env aenv) t
@@ -300,7 +300,7 @@ makeGraphE expr env dag n = case expr of
     -> DirectedAcyclicGraph
   makeGraphT NilTup        dag' = dag'
   makeGraphT (SnocTup t e) dag' = makeGraphT t $ makeGraphE e env dag' n
-  -- just writing out these 3 was easier than making a more general solution
+  -- just writing out these 2 was easier than making a more general solution
   makeGraphE1 :: LabelledOpenExp eenv aenv e -> DirectedAcyclicGraph
   makeGraphE1 e = makeGraphE e env dag n
   makeGraphE2
@@ -364,6 +364,9 @@ getNodeId n e =
       _   -> error "getNodeId failed"
     )
     $ getNodeIds n e
+
+
+
 
 
 
@@ -648,19 +651,18 @@ makeILP DAG {..} = execLPM $ do
       "A function expected '(Fusion x y)' but got something else in NewFusion/Solver.hs"
 
 
-callGLPKTest :: LP ILPVar Int -> IO Int
+callGLPKTest :: LP ILPVar Int -> IO ()
 callGLPKTest lp = do
-  print "ilp omitted"
+  --print "ilp:"
   --print lp
-  print "res1:"
-  res1 <- glpSolveVars opt1 lp
-  print res1
-  print "res2:"
+  --print "using simplexDefaults:"
+  --res1 <- glpSolveVars opt1 lp
+  --print res1
+  print "using mipDefaults:"
   res2 <- glpSolveVars opt2 lp
   print res2
-  return 3
  where
-  opt1 = simplexDefaults
+  --opt1 = simplexDefaults
   opt2 = mipDefaults
 
 -- the doubles in the return type are always whole numbers, but glpk-hs just always returns this
@@ -673,8 +675,8 @@ callGLPK lp = do
 groupNodes :: M.Map ILPVar Double -> [[NodeId]]
 groupNodes =
   map (map ((\(Pi n) -> n) . fst))
-    . sortBy (compare `on` (snd . head))
     . groupBy ((==) @Int `on` (round . snd))
+    . sortBy (compare `on` snd)
     . filter (isPi . fst)
     . M.assocs
  where
