@@ -249,7 +249,12 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
     let dagF  = makeGraphF f env dag n
         dagBx = makeGraphB bx env dagF n
         dagBy = makeGraphB by env dagBx n
-    in  (n, dagBy { nodes = (n, Stencil2T (getNodeId env x) (getNodeId env y)) $: nodes dagBy })
+    in  ( n
+        , dagBy
+          { nodes = (n, Stencil2T (getNodeId env x) (getNodeId env y))
+                      $: nodes dagBy
+          }
+        )
   Scanl'{} -> error "I don't like scanl' and scanr'"
   Scanr'{} -> error "I don't like scanl' and scanr'"
 
@@ -336,11 +341,8 @@ makeGraphB
 makeGraphB (Function f) = makeGraphF f
 makeGraphB _            = const const
 
-
-
 ($:) :: (NodeId, NodeType) -> IM.IntMap NodeType -> IM.IntMap NodeType
 ($:) (NodeId n, x) = IM.insert n x
-
 ($++) :: [(NodeId, NodeType)] -> IM.IntMap NodeType -> IM.IntMap NodeType
 ($++) xs intmap = foldl' (\im (NodeId n, x) -> IM.insert n x im) intmap xs
 
@@ -423,31 +425,33 @@ makeILP DAG {..} = execLPM $ do
   setObjective $ linCombination $ map (1, ) fusionVars -- cost function, currently minimising the number of unfused edges
 
   -- fusion variables
-  mapM_ (\x -> varBds x 0 1)              fusionVars
+  mapM_ (\x -> varBds x 0 1)    fusionVars
 
   -- 'pi' variables for acyclicity
-  mapM_ (\x -> varBds x 0 (length nodes)) piVars
+  mapM_ (\x -> varBds x 0 maxN) piVars
 
   -- fpe constraints
-  mapM_ (`varEq` 1)                       fpeVars
+  mapM_ (`varEq` 1)             fpeVars
 
   -- acyclicity contraints
-  mapM_ makeAcyclicV                      (verticalVars ++ fpeVars)
-  mapM_ makeAcyclicH                      horizontalVars
-  mapM_ makeAcyclicFPE                    fpeVars
+  mapM_ makeAcyclicV            (verticalVars ++ fpeVars)
+  mapM_ makeAcyclicH            horizontalVars
+  mapM_ makeAcyclicFPE          fpeVars
 
   -- nodetype-specific constraints:
   -- - input and output shape and direction variables
-  mapM_ makeConstraint                    nodes'
+  mapM_ makeConstraint          nodes'
   -- - rules relating those variables to the fusion variables
-  mapM_ fusionShapeV                      verticalVars
-  mapM_ fusionShapeH                      horizontalVars
+  mapM_ fusionShapeV            verticalVars
+  mapM_ fusionShapeH            horizontalVars
 
   -- constrain all variables to be integers
-  mapM_ (`setVarKind` IntVar)             (fusionVars ++ piVars ++ fpeVars)
+  mapM_ (`setVarKind` IntVar)   (fusionVars ++ piVars ++ fpeVars)
  where
   nodes' :: [(NodeId, NodeType)]
   nodes' = map (first NodeId) (IM.assocs nodes)
+
+  maxN   = maximum $ map ((\(NodeId n) -> n) . fst) nodes'
 
   -- the maximum number of innermost dimensions a threadblock may hold, for a fold or scan on multidimensional data
   maxFoldScanDims :: Int
@@ -616,19 +620,13 @@ makeILP DAG {..} = execLPM $ do
 
   makeAcyclicV, makeAcyclicH, makeAcyclicFPE :: ILPVar -> LPM ILPVar Int ()
   makeAcyclicV (Fusion x y) = do
-    leqTo (linCombination [(1, Fusion x y), (-1, Pi y), (1, Pi x)]) 0 -- f_{x,y} ≤ pi_y − pi_x   ==> precedence-preserving
-    leqTo
-      (linCombination [(-IM.size nodes, Fusion x y), (1, Pi y), (-1, Pi x)])
-      0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
+    leqTo (linCombination [(1, Fusion x y), (-1, Pi y), (1, Pi x)])     0 -- f_{x,y} ≤ pi_y − pi_x   ==> precedence-preserving
+    leqTo (linCombination [(-maxN, Fusion x y), (1, Pi y), (-1, Pi x)]) 0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
   makeAcyclicV _ = ilpError
 
   makeAcyclicH (Fusion x y) = do
-    leqTo
-      (linCombination [(-IM.size nodes, Fusion x y), (-1, Pi y), (1, Pi x)])
-      0 -- −N*f_{i,j} ≤ pi_y - pi_x
-    leqTo
-      (linCombination [(-IM.size nodes, Fusion x y), (1, Pi y), (-1, Pi x)])
-      0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
+    leqTo (linCombination [(-maxN, Fusion x y), (-1, Pi y), (1, Pi x)]) 0 -- −N*f_{i,j} ≤ pi_y - pi_x
+    leqTo (linCombination [(-maxN, Fusion x y), (1, Pi y), (-1, Pi x)]) 0 -- pi_y − pi_x ≤ N*f_{x,y} ==> guarantees that the pi's are equal if fused
   makeAcyclicH _ = ilpError
 
   makeAcyclicFPE (Fusion x y) =
@@ -669,9 +667,9 @@ callGLPKTest lp = do
   print "using mipDefaults:"
   res2 <- glpSolveVars opt2 lp
   print res2
- where
+  where
   --opt1 = simplexDefaults
-  opt2 = mipDefaults
+        opt2 = mipDefaults
 
 -- the doubles in the return type are always whole numbers, but glpk-hs just always returns this
 callGLPK :: LP ILPVar Int -> IO (M.Map ILPVar Double)
