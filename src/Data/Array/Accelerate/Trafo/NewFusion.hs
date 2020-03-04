@@ -25,7 +25,7 @@ dotesting acc = do print "newfusion start"
                    print "graph:"
                    print graph
                    let lp    = makeILP graph
-                   callGLPKTest lp
+                   --callGLPKTest lp
                    solu <- callGLPK lp
                    print $ groupNodes solu
                    return acc

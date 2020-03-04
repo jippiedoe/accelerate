@@ -24,7 +24,7 @@ import           Data.Bifunctor
 import qualified Data.IntMap.Strict            as IM
 import qualified Data.Map.Strict               as M
 import           Control.Monad.LPMonad
-import           Data.LinearProgram
+import           Data.LinearProgram      hiding ( (*) )
 import           Data.Array.Accelerate.Analysis.Match
 import           Data.Array.Accelerate.Array.Sugar
 import           Data.List
@@ -64,18 +64,18 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
         (n2, dag2) = makeGraph acc2 env dag1
     in  ( n
         , dag2 { nodes = (n, UnfusableT n1) $: nodes dag2
-               , fpes  = (n, n1) : (n, n2) : fpes dag2
+               , fpes  = (n1, n2) : (n2, n) : fpes dag2
                }
         )
-  Awhile n f g x ->
+  Awhile n f g x -> -- we enforce ng -> n -> x -> nf
     let (nf, dagF) = makeGraphAF f env n dag
         (ng, dagG) = makeGraphAF g env nf dagF
     in  ( n
         , dagG
-          { nodes = (n, UnfusableT nf) $: nodes dagG
+          { nodes = (n, UnfusableT ng) $: nodes dagG
           , fpes  = (n, nf)
-                    :  (nf, ng)
-                    :  map (, n) (getNodeIds env x)
+                    :  map (  , nf) (getNodeIds env x)
+                    ++ map (n, )   (getNodeIds env x)
                     ++ fpes dagG
           }
         )
@@ -451,7 +451,7 @@ makeILP DAG {..} = execLPM $ do
   nodes' :: [(NodeId, NodeType)]
   nodes' = map (first NodeId) (IM.assocs nodes)
 
-  maxN   = (2 Prelude.*) $ maximum $ map ((\(NodeId n) -> n) . fst) nodes'
+  maxN   = (2 *) $ maximum $ map ((\(NodeId n) -> n) . fst) nodes'
 
   -- the maximum number of innermost dimensions a threadblock may hold, for a fold or scan on multidimensional data
   maxFoldScanDims :: Int
