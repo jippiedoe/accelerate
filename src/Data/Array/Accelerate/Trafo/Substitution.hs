@@ -670,32 +670,32 @@ rebuildPreLabelledAcc k av acc =
   case acc of
     F.Use n a                   -> pure (F.Use n a)
     F.Alet lhs a b              -> rebuildAletF k av lhs a b
-    F.Variable n v              -> F.Variable n    <$> potentiallyUnsafeButUseful v
-    F.Apply n f a               -> F.Apply n       <$> rebuildAfun k av f <*> potentiallyUnsafeButUseful a
-    F.Acond n p t e             -> F.Acond n       <$> rebuildPreOpenExp k (pure . IE) av p <*> k av t <*> k av e
-    F.Awhile n p f a            -> F.Awhile n      <$> rebuildAfun k av p <*> rebuildAfun k av f <*> potentiallyUnsafeButUseful a
-    F.Unit n e                  -> F.Unit n        <$> rebuildPreOpenExp k (pure . IE) av e
-    F.Reshape n e a             -> F.Reshape n     <$> rebuildPreOpenExp k (pure . IE) av e <*> potentiallyUnsafeButUseful a
-    F.Generate n e f            -> F.Generate n    <$> rebuildPreOpenExp k (pure . IE) av e <*> rebuildFun k (pure . IE) av f
-    --Transform sh ix f a       ->   Transform    <$> rebuildPreOpenExp k (pure . IE) av sh <*> rebuildFun k (pure . IE) av ix <*> rebuildFun k (pure . IE) av f <*> k av a
-    --Replicate sl slix a       ->   Replicate sl <$> rebuildPreOpenExp k (pure . IE) av slix <*> k av a
-    F.Slice n sl a slix         -> F.Slice n sl    <$> potentiallyUnsafeButUseful a <*> rebuildPreOpenExp k (pure . IE) av slix
-    F.Map n f a                 -> F.Map n         <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
-    F.ZipWith n f a1 a2         -> F.ZipWith n     <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a1 <*> potentiallyUnsafeButUseful a2
-    F.Fold n f z a              -> F.Fold n        <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
-    F.Fold1 n f a               -> F.Fold1 n       <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
-    F.FoldSeg n f z a s         -> F.FoldSeg n     <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a <*> potentiallyUnsafeButUseful s
-    F.Fold1Seg n f a s          -> F.Fold1Seg n    <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a <*> potentiallyUnsafeButUseful s
-    F.Scanl n f z a             -> F.Scanl n       <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
-    F.Scanl' n f z a            -> F.Scanl' n      <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
-    F.Scanl1 n f a              -> F.Scanl1 n      <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
-    F.Scanr n f z a             -> F.Scanr n       <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
-    F.Scanr' n f z a            -> F.Scanr' n      <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
-    F.Scanr1 n f a              -> F.Scanr1 n      <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
-    F.Permute n f1 a1 f2 a2     -> F.Permute n     <$> rebuildFun k (pure . IE) av f1 <*> potentiallyUnsafeButUseful a1 <*> rebuildFun k (pure . IE) av f2 <*> potentiallyUnsafeButUseful a2
-    F.Backpermute n sh f a      -> F.Backpermute n <$> rebuildPreOpenExp k (pure . IE) av sh <*> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
-    F.Stencil n f b a           -> F.Stencil n     <$> rebuildFun k (pure . IE) av f <*> rebuildBoundary k av b  <*> potentiallyUnsafeButUseful a
-    F.Stencil2 n f b1 a1 b2 a2  -> F.Stencil2 n    <$> rebuildFun k (pure . IE) av f <*> rebuildBoundary k av b1 <*> potentiallyUnsafeButUseful a1 <*> rebuildBoundary k av b2 <*> potentiallyUnsafeButUseful a2
+    F.Variable n v              -> F.Variable n     <$> potentiallyUnsafeButUseful v
+    F.Apply n f a               -> F.Apply n        <$> rebuildAfun k av f <*> potentiallyUnsafeButUseful a
+    F.Acond n p t e             -> F.Acond n        <$> rebuildPreOpenExp k (pure . IE) av p <*> k av t <*> k av e
+    F.Awhile n p f a            -> F.Awhile n       <$> rebuildAfun k av p <*> rebuildAfun k av f <*> potentiallyUnsafeButUseful a
+    F.Unit n e                  -> F.Unit n         <$> rebuildPreOpenExp k (pure . IE) av e
+    F.Reshape n e a             -> F.Reshape n      <$> rebuildPreOpenExp k (pure . IE) av e <*> potentiallyUnsafeButUseful a
+    F.Generate n e f            -> F.Generate n     <$> rebuildPreOpenExp k (pure . IE) av e <*> rebuildFun k (pure . IE) av f
+    F.Transform n sh ix f a     -> F.Transform n    <$> rebuildPreOpenExp k (pure . IE) av sh <*> rebuildFun k (pure . IE) av ix <*> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
+    F.Replicate n sl slix a     -> F.Replicate n sl <$> rebuildPreOpenExp k (pure . IE) av slix <*> potentiallyUnsafeButUseful a
+    F.Slice n sl a slix         -> F.Slice n sl     <$> potentiallyUnsafeButUseful a <*> rebuildPreOpenExp k (pure . IE) av slix
+    F.Map n f a                 -> F.Map n          <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
+    F.ZipWith n f a1 a2         -> F.ZipWith n      <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a1 <*> potentiallyUnsafeButUseful a2
+    F.Fold n f z a              -> F.Fold n         <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
+    F.Fold1 n f a               -> F.Fold1 n        <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
+    F.FoldSeg n f z a s         -> F.FoldSeg n      <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a <*> potentiallyUnsafeButUseful s
+    F.Fold1Seg n f a s          -> F.Fold1Seg n     <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a <*> potentiallyUnsafeButUseful s
+    F.Scanl n f z a             -> F.Scanl n        <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
+    F.Scanl' n f z a            -> F.Scanl' n       <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
+    F.Scanl1 n f a              -> F.Scanl1 n       <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
+    F.Scanr n f z a             -> F.Scanr n        <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
+    F.Scanr' n f z a            -> F.Scanr' n       <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> potentiallyUnsafeButUseful a
+    F.Scanr1 n f a              -> F.Scanr1 n       <$> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
+    F.Permute n f1 a1 f2 a2     -> F.Permute n      <$> rebuildFun k (pure . IE) av f1 <*> potentiallyUnsafeButUseful a1 <*> rebuildFun k (pure . IE) av f2 <*> potentiallyUnsafeButUseful a2
+    F.Backpermute n sh f a      -> F.Backpermute n  <$> rebuildPreOpenExp k (pure . IE) av sh <*> rebuildFun k (pure . IE) av f <*> potentiallyUnsafeButUseful a
+    F.Stencil n f b a           -> F.Stencil n      <$> rebuildFun k (pure . IE) av f <*> rebuildBoundary k av b  <*> potentiallyUnsafeButUseful a
+    F.Stencil2 n f b1 a1 b2 a2  -> F.Stencil2 n     <$> rebuildFun k (pure . IE) av f <*> rebuildBoundary k av b1 <*> potentiallyUnsafeButUseful a1 <*> rebuildBoundary k av b2 <*> potentiallyUnsafeButUseful a2
     F.Aforeign n ff afun as     -> F.Aforeign n ff afun <$> potentiallyUnsafeButUseful as
     where
       potentiallyUnsafeButUseful :: ArrayVars aenv a -> f (ArrayVars aenv' a)

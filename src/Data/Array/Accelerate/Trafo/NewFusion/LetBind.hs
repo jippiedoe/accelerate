@@ -45,9 +45,18 @@ letBindAcc (AST.OpenAcc pacc) = LabelledOpenAcc <$> case pacc of
     letBind acc $ \w var -> Reshape <$> getInc <*> w $:> letBindExp sh <*> var
   AST.Generate sh fun ->
     Generate <$> getInc <*> letBindExp sh <*> letBindFun fun
--- TODO do these need to exist?
-  AST.Transform{}       -> undefined
-  AST.Replicate{}       -> undefined
+  AST.Transform e f g acc -> letBind acc $ \w var ->
+    Transform
+      <$> getInc
+      <*> w
+      $:> letBindExp e
+      <*> w
+      $:> letBindFun f
+      <*> w
+      $:> letBindFun g
+      <*> var
+  AST.Replicate slix e acc -> letBind acc $ \w var ->
+    Replicate <$> getInc <*> return slix <*> w $:> letBindExp e <*> var
   AST.Slice slidx acc e -> letBind acc $ \w var ->
     Slice <$> getInc <*> return slidx <*> var <*> w $:> letBindExp e
   AST.Map f acc ->
@@ -150,8 +159,9 @@ letBind acc cont = case acc of -- test if 'acc' is already a variable, and retur
   x -> do
     acc' <- letBindAcc x
     case makeLHSBV acc' of
-      Exists (LHSBV lhs var) ->
-        Alet lhs acc' . LabelledOpenAcc <$> cont (weakenWithLHS lhs) (return var)
+      Exists (LHSBV lhs var) -> Alet lhs acc' . LabelledOpenAcc <$> cont
+        (weakenWithLHS lhs)
+        (return var)
 
 makeLHSBV :: HasArraysRepr f => f aenv a -> Exists (LHSBoundVar a env)
 makeLHSBV = makeLHSBV' . arraysRepr where

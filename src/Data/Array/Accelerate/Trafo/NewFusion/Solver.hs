@@ -29,7 +29,6 @@ import           Data.Array.Accelerate.Analysis.Match
 import           Data.Array.Accelerate.Array.Sugar
 import           Data.List
 import           Data.Function
-import Debug.Trace
 
 makeGraph
   :: LabelledOpenAcc aenv a
@@ -96,6 +95,14 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
     let dagE = makeGraphE e env dag n
         dagF = makeGraphF f env dagE n
     in  (n, dagF { nodes = (n, GenerateT) $: nodes dagF })
+  Transform n e f g x -> -- should never occur, as transform is a product of old fusion
+    let dagE = makeGraphE e env dag n
+        dagF = makeGraphF f env dagE n
+        dagG = makeGraphF g env dagF n
+    in  (n, dagG { nodes = (n, MapT (getNodeId env x)) $: nodes dagG })
+  Replicate n _ e x -> -- TODO make a replicateT, which is less restrictive than backpermuteT
+    let dagE = makeGraphE e env dag n
+    in  (n, dagE { nodes = (n, BackpermuteT (getNodeId env x)) $: nodes dagE })
   Slice n _ x e -> --TODO ignore 'slice type information'?
     let dagE = makeGraphE e env dag n
     in  (n, dagE { nodes = (n, BackpermuteT (getNodeId env x)) $: nodes dagE })
@@ -243,7 +250,8 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
         dagBx = makeGraphB bx env dagF n
         dagBy = makeGraphB by env dagBx n
     in  (n, dagBy { nodes = (n, Stencil2T (getNodeId env x) (getNodeId env y)) $: nodes dagBy })
-  _ -> error "I don't like scanl' and scanr'"
+  Scanl'{} -> error "I don't like scanl' and scanr'"
+  Scanr'{} -> error "I don't like scanl' and scanr'"
 
 
 makeGraphAF

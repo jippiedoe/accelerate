@@ -127,8 +127,23 @@ data PreLabelledAcc acc aenv a where
               -> PreFun         acc aenv (sh -> e)                  -- representation function
               -> PreLabelledAcc acc aenv (Array sh e)
 
---TODO transform not needed? might rip it out of the whole compiler
---TODO replicate not needed? just turn into a backpermute? (but why here and not even earlier)
+  Transform   :: (Elt a, Elt b, Shape sh, Shape sh')
+              => NodeId
+              -> PreExp         acc aenv sh'                        -- dimension of the result
+              -> PreFun         acc aenv (sh' -> sh)                -- index permutation function
+              -> PreFun         acc aenv (a   -> b)                 -- function to apply at each element
+              -> ArrayVars          aenv (Array sh  a)              -- source array
+              -> PreLabelledAcc acc aenv (Array sh' b)
+
+  Replicate   :: (Shape sh, Shape sl, Elt slix, Elt e)
+              => NodeId
+              -> SliceIndex (EltRepr slix)                      -- slice type specification
+                            (EltRepr sl)
+                            co
+                            (EltRepr sh)
+              -> PreExp         acc aenv slix                       -- slice value specification
+              -> ArrayVars          aenv (Array sl e)               -- data to be replicated
+              -> PreLabelledAcc acc aenv (Array sh e)
 
   Slice       :: (Shape sh, Shape sl, Elt slix, Elt e)
               => NodeId
@@ -278,8 +293,8 @@ instance HasArraysRepr acc => HasArraysRepr (PreLabelledAcc acc) where
   arraysRepr Unit{}                               = ArraysRarray
   arraysRepr Reshape{}                            = ArraysRarray
   arraysRepr Generate{}                           = ArraysRarray
---arraysRepr Transform{}                          = ArraysRarray
---arraysRepr Replicate{}                          = ArraysRarray
+  arraysRepr Transform{}                          = ArraysRarray
+  arraysRepr Replicate{}                          = ArraysRarray
   arraysRepr Slice{}                              = ArraysRarray
   arraysRepr Map{}                                = ArraysRarray
   arraysRepr ZipWith{}                            = ArraysRarray
