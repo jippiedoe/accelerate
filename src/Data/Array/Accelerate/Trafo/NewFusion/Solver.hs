@@ -451,7 +451,7 @@ makeILP DAG {..} = execLPM $ do
   nodes' :: [(NodeId, NodeType)]
   nodes' = map (first NodeId) (IM.assocs nodes)
 
-  maxN   = (2*) $ maximum $ map ((\(NodeId n) -> n) . fst) nodes'
+  maxN   = (2 Prelude.*) $ maximum $ map ((\(NodeId n) -> n) . fst) nodes'
 
   -- the maximum number of innermost dimensions a threadblock may hold, for a fold or scan on multidimensional data
   maxFoldScanDims :: Int
