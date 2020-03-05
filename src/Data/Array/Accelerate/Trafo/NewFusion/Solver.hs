@@ -58,26 +58,22 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
       , fpes  = map (, n) (getNodeIds env x) ++ fpes dag
       }
     )
-  Acond n e acc1 acc2 ->
+  Acond n e acc1 acc2 -> -- n -> e -> n1 -> n2
     let dagE       = makeGraphE e env dag n
         (n1, dag1) = makeGraph acc1 env dagE
         (n2, dag2) = makeGraph acc2 env dag1
     in  ( n
         , dag2 { nodes = (n, UnfusableT n1) $: nodes dag2
-               , fpes  = (n1, n2) : (n2, n) : fpes dag2
+               , fpes  = (n1, n2) : fpes dag2
                }
         )
-  Awhile n f g x -> -- we enforce ng -> n -> x -> nf
-    let (nf, dagF) = makeGraphAF f env n dag
-        (ng, dagG) = makeGraphAF g env nf dagF
+  Awhile n f g x -> -- we enforce x -> n -> ng -> nf, to prevent any fusion across the while-loop
+    let (ng, dagG) = makeGraphAF g env n dag -- n -> ng
+        (_ , dagF) = makeGraphAF f env ng dagG -- ng -> nf
     in  ( n
-        , dagG
-          { nodes = (n, UnfusableT ng) $: nodes dagG
-          , fpes  = (n, nf)
-                    :  map (  , nf) (getNodeIds env x)
-                    ++ map (n, )   (getNodeIds env x)
-                    ++ fpes dagG
-          }
+        , dagF { nodes = (n, UnfusableT (head $ getNodeIds env x)) $: nodes dagF
+               , fpes  = map (, n) (getNodeIds env x) ++ fpes dagF -- x -> n
+               }
         )
   Use n _ -> (n, dag { nodes = (n, GenerateT) $: nodes dag })
   Unit n e ->
@@ -267,7 +263,9 @@ makeGraphAF
   -> (NodeId, DirectedAcyclicGraph)
 makeGraphAF (Alam lhs body) env n dag =
   makeGraphAF body (applyLHS lhs env n) n dag
-makeGraphAF (Abody body) env _ dag = makeGraph body env dag
+makeGraphAF (Abody body) env n dag =
+  let (m, dag') = makeGraph body env dag
+  in  (m, dag' { fpes = (n, m) : fpes dag' })
 
 --we're in an expression, so in a single Node, so we want to know the deps of this node. Just traverse the Exp and look for 'index' and 'linearindex' to add fpe's
 makeGraphE

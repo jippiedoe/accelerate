@@ -6,7 +6,11 @@ import qualified Data.Array.Accelerate.Interpreter as I
 main :: IO ()
 main = do
   print "starting test/newfusion! woo!"
-  print $ I.run normalise2
+  print $ I.run testwhile
+
+
+testwhile :: A.Acc (A.Array A.DIM1 Int)
+testwhile = A.awhile (const $ A.use $ A.fromList A.Z [True]) (A.map (+1)) (A.use $ A.fromList (A.Z A.:. 1) [1])
 
 
 -- from "Fusing Filters with Integer Linear Programming", but replacing the filter with a prefixsum
