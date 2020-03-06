@@ -11,8 +11,17 @@ module Data.Array.Accelerate.Trafo.NewFusion.AST (
   ArrayVars (..),
   GroupedLabelledAcc (..),
   PreFusedOpenAcc (..),
-  FusedOpenAcc,
+  Single,
+  Multiple,
   FusedAcc,
+  FusedAfun,
+  FusedExp,
+  FusedFun,
+  FusedOpenAcc,
+  FusedOpenAfun,
+  FusedOpenExp,
+  FusedOpenFun,
+  LabelledOpenAfun,
   LabelledOpenExp,
   LabelledOpenFun
   ) where
@@ -35,39 +44,46 @@ data GroupedLabelledAcc aenv a where
   ContainsMultipleGroups :: PreLabelledAcc GroupedLabelledAcc aenv a -> GroupedLabelledAcc aenv a
 
 
-type FusedAcc = FusedOpenAcc ()
-type FusedOpenAcc = PreFusedOpenAcc UnFused
 
--- The extra parameter 'single' signifies whether the contained acc is fused into a single pass.
+type FusedAcc  = FusedOpenAcc ()
+type FusedAfun = FusedOpenAfun ()
+type FusedExp  = FusedOpenExp ()
+type FusedFun  = FusedOpenFun ()
+type FusedOpenAcc  = PreFusedOpenAcc Multiple
+type FusedOpenAfun = PreOpenAfun FusedOpenAcc
+type FusedOpenExp  = PreOpenExp  FusedOpenAcc
+type FusedOpenFun  = PreOpenFun  FusedOpenAcc
+
+-- The extra parameter 'numerousness' signifies whether the contained acc is fused into a single pass.
 -- This guarantees that the fused tree is consistent with itself.
-data Fused
-data UnFused
-data PreFusedOpenAcc single aenv a where
-  RootOfFusionTree      :: PreFusedOpenAcc Fused    aenv a
-                        -> PreFusedOpenAcc UnFused aenv a
+data Single
+data Multiple
+data PreFusedOpenAcc numerousness aenv a where
+  RootOfFusionTree      :: PreFusedOpenAcc Single   aenv a
+                        -> PreFusedOpenAcc Multiple aenv a
 
-  Multiple              :: AST.PreOpenAcc (PreFusedOpenAcc UnFused) aenv a
-                        -> PreFusedOpenAcc UnFused                  aenv a
+  Multiple              :: AST.PreOpenAcc (PreFusedOpenAcc Multiple) aenv a
+                        -> PreFusedOpenAcc Multiple                  aenv a
 
-  LeafOfFusionTree      :: AST.OpenAcc                aenv a
-                        -> PreFusedOpenAcc Fused aenv a
+  LeafOfFusionTree      :: AST.OpenAcc            aenv a
+                        -> PreFusedOpenAcc Single aenv a
 
   Vertical              ::
     { lhsV              :: LeftHandSide a aenv benv
-    , innerV            :: PreFusedOpenAcc Fused aenv a
-    , outerV            :: PreFusedOpenAcc Fused benv b
-    }                   -> PreFusedOpenAcc Fused aenv b
+    , innerV            :: PreFusedOpenAcc Single aenv a
+    , outerV            :: PreFusedOpenAcc Single benv b
+    }                   -> PreFusedOpenAcc Single aenv b
 
   Horizontal            ::
-    { leftH             :: PreFusedOpenAcc Fused aenv  a
-    , rightH            :: PreFusedOpenAcc Fused aenv    b
-    }                   -> PreFusedOpenAcc Fused aenv (a,b)
+    { leftH             :: PreFusedOpenAcc Single aenv  a
+    , rightH            :: PreFusedOpenAcc Single aenv    b
+    }                   -> PreFusedOpenAcc Single aenv (a,b)
 
   Diagonal              ::
     { lhsD              :: LeftHandSide a aenv benv
-    , firstD            :: PreFusedOpenAcc Fused aenv  a
-    , secondD           :: PreFusedOpenAcc Fused benv    b
-    }                   -> PreFusedOpenAcc Fused aenv (a,b)
+    , firstD            :: PreFusedOpenAcc Single aenv  a
+    , secondD           :: PreFusedOpenAcc Single benv    b
+    }                   -> PreFusedOpenAcc Single aenv (a,b)
 
 
 
@@ -269,9 +285,9 @@ data PreLabelledAcc acc aenv a where
 
 -- used to bind variables in PreLabelledAcc
 
-type LabelledOpenExp = PreOpenExp LabelledOpenAcc
-type LabelledOpenFun = PreOpenFun LabelledOpenAcc
-
+type LabelledOpenExp  = PreOpenExp  LabelledOpenAcc
+type LabelledOpenFun  = PreOpenFun  LabelledOpenAcc
+type LabelledOpenAfun = PreOpenAfun LabelledOpenAcc
 
 
 
