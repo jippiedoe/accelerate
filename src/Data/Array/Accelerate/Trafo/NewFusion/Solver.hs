@@ -30,6 +30,8 @@ import           Data.Array.Accelerate.Array.Sugar
 import           Data.List
 import           Data.Function
 
+-- TODO fold output can have any direction
+
 makeGraph
   :: LabelledOpenAcc aenv a
   -> [NodeId]
@@ -551,7 +553,7 @@ makeILP DAG {..} = execLPM $ do
         (linCombination [(-1, OutputDirection n), (1, InputDirection n)])
         0
       equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
-    PermuteT _ _ -> do
+    PermuteT _ _ -> do -- TODO fix backpermute . permute by adding a -1 direction
       varBds (InputDirection n) 0 2 -- can't fuse the output of a permute, so no variable needed
       varGeq (InputShape n) (-2)
     BackpermuteT _ -> do

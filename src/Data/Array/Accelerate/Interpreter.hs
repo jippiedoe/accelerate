@@ -70,7 +70,7 @@ import Unsafe.Coerce
 import Prelude                                                      hiding ( (!!), sum )
 
 -- enemy
-import Data.Array.Accelerate.Trafo.NewFusion.NewInterpreter ()
+import Data.Array.Accelerate.Trafo.NewFusion.NewInterpreter ()--(testThis)
 
 -- friends
 import Data.Array.Accelerate.AST                                    hiding ( Boundary, PreBoundary(..) )
@@ -101,6 +101,7 @@ run a = unsafePerformIO execute
   where
     !acc    = convertAcc a
     execute = do
+      --print testThis
       D.dumpGraph $!! acc
       D.dumpSimplStats
       res <- phase "execute" D.elapsed $ evaluate $ evalOpenAcc acc Empty
