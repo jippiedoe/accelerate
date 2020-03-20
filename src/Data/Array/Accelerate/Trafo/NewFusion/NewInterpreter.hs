@@ -91,6 +91,10 @@ type family MapConsShapes a = b | b -> a where
   MapConsShapes () = ()
   MapConsShapes (tup, (a, sh)) = (MapConsShapes tup, (a, sh:.Int))
 
+type family MapCons a = b | b -> a where
+  MapCons () = ()
+  MapCons (tup, Array sh e) = (MapCons tup, Array (sh:.Int) e)
+
 type family HorizontalFusion left right where
   HorizontalFusion () right = right
   HorizontalFusion (left, a) right = (HorizontalFusion left right, a)
@@ -118,27 +122,34 @@ type family MapTupList f a where
   MapTupList f (tup, a) = (MapTupList f tup, f a)
   -}
 
+class ArrayTups a
+
+instance ArrayTups ()
+
+instance (ArrayTups tup, Shape sh, Elt e) => ArrayTups (tup, Array sh e)
+
 data ArrayTypeShapes tup where
   None  ::ArrayTypeShapes ()
-  Push  ::(Elt a, Shape sh)
+  Add   ::(Elt e, Shape sh, Typeable tup)
         => ArrayTypeShapes tup
-        -> (a, sh)
-        -> ArrayTypeShapes (tup, (a, sh))
+        -> Array sh e
+        -> ArrayTypeShapes (tup, Array sh e)
 deriving instance Typeable ArrayTypeShapes
 
 data IntermediateRep inputs outputs where
   Void ::IntermediateRep () ()
-  Id   ::(Elt e, Shape sh)
+  Id   ::(Elt e, Shape sh, Typeable a, Typeable b)
        => IntermediateRep a b
-       -> IntermediateRep (a, (e, sh)) (b, (e, sh))
+       -> IntermediateRep (a, Array sh e) (b, Array sh e)
 
-  For  ::IntermediateRep ins outs
+  For  ::(Typeable ins, Typeable outs)
+       => IntermediateRep ins outs
        -> Int -- for (i=0;i<INT;i++) :)
-       -> IntermediateRep (MapConsShapes ins) (MapConsShapes outs)
+       -> IntermediateRep (MapCons ins) (MapCons outs)
 
   -- vertical
 
-  Before ::LoopBody        a b
+  Before :: LoopBody        a b
          -> IntermediateRep b c
          -> IntermediateRep a c
 
@@ -158,6 +169,7 @@ data IntermediateRep inputs outputs where
   Besides ::LoopBody        a b
           -> IntermediateRep a c
           -> IntermediateRep a (HorizontalFusion b c)
+deriving instance Typeable IntermediateRep
 
 data LoopBody inputs outputs where
   Base ::LoopBody () ()
@@ -169,23 +181,23 @@ data LoopBody inputs outputs where
 
 data LoopBody' input output where
   OneToOne ::s -> (a -> State s b)
-           -> LoopBody' (a, DIM0) (b, DIM0)
+           -> LoopBody' (Array DIM0 a) (Array DIM0 b)
 
   -- the Bool signifies whether this is the last 'a'
   ManyToOne :: Int --insize
             -> s -> (a -> Bool -> State s (Maybe b))
-            -> LoopBody' (a, DIM1) (b, DIM0)
+            -> LoopBody' (Array DIM1 a) (Array DIM0 b)
 
   -- state seems fairly useless here, but for consistency
   OneToMany ::s -> (a -> State s [b])
             -> Int --outsize
-            -> LoopBody' (a, DIM0) (b, DIM1)
+            -> LoopBody' (Array DIM0 a) (Array DIM1 b)
 
   -- the Bool signifies whether this is the last 'a'
   ManyToMany :: Int --insize
              -> s -> (a -> Bool -> State s (Maybe b))
              -> Int --outsize
-             -> LoopBody' (a, DIM1) (b, DIM1)
+             -> LoopBody' (Array DIM1 a) (Array DIM1 b)
 
 evalIR
   :: IntermediateRep inputs outputs
@@ -196,11 +208,12 @@ evalIR ir input outputshape = undefined
 
 
 evalIR'
-  :: IntermediateRep inputs outputs
-  -> MapToArray inputs
-  -> StateT ([Int], [Int]) IO (MapToArray outputs)
-evalIR' Void _ = return ()
-evalIR' (Id ir) (xs,x) = (, x) <$> evalIR' ir xs
+  :: (Typeable inputs, Typeable outputs)
+  => IntermediateRep inputs outputs
+  -> ArrayTypeShapes inputs
+  -> StateT ([Int], [Int]) IO (ArrayTypeShapes outputs)
+evalIR' Void _ = return None
+evalIR' (Id ir) (xs `Add` x) = (`Add` x) <$> evalIR' ir xs
 evalIR' (For ir n) xs = concatArrays <$> traverse (evalIR' ir . unconsArrays xs) [0..n-1]
 evalIR' (Before  body ir) xs = evalLoopBody body xs >>= \xs' -> evalIR' ir xs'
 evalIR' (After   ir body) xs = evalIR' ir xs >>= \xs' -> evalLoopBody body xs'
@@ -210,19 +223,19 @@ evalIR' (Besides body ir) xs = fuseHorizontal <$> evalLoopBody body xs <*> evalI
 
 
 evalLoopBody :: LoopBody inputs outputs
-             -> MapToArray inputs
-             -> StateT ([Int],[Int]) IO (MapToArray outputs)
+             -> ArrayTypeShapes inputs
+             -> StateT ([Int],[Int]) IO (ArrayTypeShapes outputs)
 evalLoopBody = undefined
 
-fuseHorizontal :: a -> b -> HorizontalFusion a b
+fuseHorizontal :: ArrayTypeShapes a -> ArrayTypeShapes b -> ArrayTypeShapes (HorizontalFusion a b)
 fuseHorizontal = undefined
 
-unconsArrays :: MapToArray (MapConsShapes t) -> Int -> MapToArray t
-unconsArrays () _ = ()
-unconsArrays (xs, Array sh adata) i = let (n,sh') = uncons sh in
-  (unconsArrays xs, Array sh' _) --TODO make subarrays
+unconsArrays :: ArrayTypeShapes (MapCons t) -> Int -> ArrayTypeShapes t
+unconsArrays (x :: ArrayTypeShapes (MapCons t)) i = case x of
+  None -> unsafeCoerce @(ArrayTypeShapes ()) @(ArrayTypeShapes t) None -- despite MapCons being injective, ghc does not recognise that (MapCons t ~ ()) implies (t ~ ())
+  Add xs (Array sh e) -> unsafeCoerce $ let (n, sh') = uncons sh in Add (unconsArrays xs i) (Array sh' e)
 
-concatArrays :: [MapToArray t] -> MapToArray (MapConsShapes t)
+concatArrays :: [ArrayTypeShapes t] -> ArrayTypeShapes (MapCons t)
 concatArrays = undefined -- TODO concat the arrays (slowly)
 
 
