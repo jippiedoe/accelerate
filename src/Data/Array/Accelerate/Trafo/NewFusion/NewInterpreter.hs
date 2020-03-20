@@ -86,19 +86,33 @@ import           Data.Foldable
 import           Data.Maybe
 
 
+import           Data.Array.Accelerate.Analysis.Match
 
+{-
 type family MapConsShapes a = b | b -> a where
   MapConsShapes () = ()
   MapConsShapes (tup, (a, sh)) = (MapConsShapes tup, (a, sh:.Int))
 
+-}
+
+data ValArr env where
+  EmptyArr :: ValArr ()
+  PushArr  :: (Shape sh, Elt e) => ValArr env -> Array sh e -> ValArr (env, Array sh e)
+
 type family MapCons a = b | b -> a where
   MapCons () = ()
-  MapCons (tup, Array sh e) = (MapCons tup, Array (sh:.Int) e)
+  MapCons (a, Array sh e) = (MapCons a, Array (sh:.Int) e)
+
+
+
+type MapUncons b = forall a. MapCons a ~ b => a
+
+
 
 type family HorizontalFusion left right where
   HorizontalFusion () right = right
   HorizontalFusion (left, a) right = (HorizontalFusion left right, a)
-
+{-
 
 type family ToArray a = b | b -> a where
   ToArray (a, sh) = Array sh a
@@ -114,20 +128,14 @@ type family MapToArray a = b | b -> a where
 type family MapSnd a where
   MapSnd () = ()
   MapSnd (tup, x) = (MapSnd tup, Snd x)
-
+-}
 {-
 apparently this isn't that easy; this type family typechecks but using it is harder than "_ :: MapTupList Snd a"
 type family MapTupList f a where
   MapTupList _ () = ()
   MapTupList f (tup, a) = (MapTupList f tup, f a)
   -}
-
-class ArrayTups a
-
-instance ArrayTups ()
-
-instance (ArrayTups tup, Shape sh, Elt e) => ArrayTups (tup, Array sh e)
-
+{-
 data ArrayTypeShapes tup where
   None  ::ArrayTypeShapes ()
   Add   ::(Elt e, Shape sh, Typeable tup)
@@ -135,15 +143,14 @@ data ArrayTypeShapes tup where
         -> Array sh e
         -> ArrayTypeShapes (tup, Array sh e)
 deriving instance Typeable ArrayTypeShapes
-
+-}
 data IntermediateRep inputs outputs where
   Void ::IntermediateRep () ()
-  Id   ::(Elt e, Shape sh, Typeable a, Typeable b)
+  Id   ::(Elt e, Shape sh)
        => IntermediateRep a b
        -> IntermediateRep (a, Array sh e) (b, Array sh e)
 
-  For  ::(Typeable ins, Typeable outs)
-       => IntermediateRep ins outs
+  For  ::IntermediateRep ins outs
        -> Int -- for (i=0;i<INT;i++) :)
        -> IntermediateRep (MapCons ins) (MapCons outs)
 
@@ -169,7 +176,6 @@ data IntermediateRep inputs outputs where
   Besides ::LoopBody        a b
           -> IntermediateRep a c
           -> IntermediateRep a (HorizontalFusion b c)
-deriving instance Typeable IntermediateRep
 
 data LoopBody inputs outputs where
   Base ::LoopBody () ()
@@ -198,22 +204,21 @@ data LoopBody' input output where
              -> s -> (a -> Bool -> State s (Maybe b))
              -> Int --outsize
              -> LoopBody' (Array DIM1 a) (Array DIM1 b)
-
+{-
 evalIR
-  :: IntermediateRep inputs outputs
+  :: IntermediateRep (ArraysR inputs) (ArraysR outputs)
   -> MapToArray inputs
   -> MapSnd outputs
   -> MapToArray outputs
 evalIR ir input outputshape = undefined
-
+-}
 
 evalIR'
-  :: (Typeable inputs, Typeable outputs)
-  => IntermediateRep inputs outputs
-  -> ArrayTypeShapes inputs
-  -> StateT ([Int], [Int]) IO (ArrayTypeShapes outputs)
-evalIR' Void _ = return None
-evalIR' (Id ir) (xs `Add` x) = (`Add` x) <$> evalIR' ir xs
+  :: IntermediateRep inputs outputs
+  -> ValArr inputs
+  -> StateT ([Int], [Int]) IO (ValArr outputs)
+evalIR' Void _ = return EmptyArr
+evalIR' (Id ir) (xs `PushArr` x) = (`PushArr` x) <$> evalIR' ir xs
 evalIR' (For ir n) xs = concatArrays <$> traverse (evalIR' ir . unconsArrays xs) [0..n-1]
 evalIR' (Before  body ir) xs = evalLoopBody body xs >>= \xs' -> evalIR' ir xs'
 evalIR' (After   ir body) xs = evalIR' ir xs >>= \xs' -> evalLoopBody body xs'
@@ -223,19 +228,22 @@ evalIR' (Besides body ir) xs = fuseHorizontal <$> evalLoopBody body xs <*> evalI
 
 
 evalLoopBody :: LoopBody inputs outputs
-             -> ArrayTypeShapes inputs
-             -> StateT ([Int],[Int]) IO (ArrayTypeShapes outputs)
+             -> ValArr inputs
+             -> StateT ([Int],[Int]) IO (ValArr outputs)
 evalLoopBody = undefined
 
-fuseHorizontal :: ArrayTypeShapes a -> ArrayTypeShapes b -> ArrayTypeShapes (HorizontalFusion a b)
+fuseHorizontal :: ValArr a -> ValArr b -> ValArr (HorizontalFusion a b)
 fuseHorizontal = undefined
 
-unconsArrays :: ArrayTypeShapes (MapCons t) -> Int -> ArrayTypeShapes t
-unconsArrays (x :: ArrayTypeShapes (MapCons t)) i = case x of
-  None -> unsafeCoerce @(ArrayTypeShapes ()) @(ArrayTypeShapes t) None -- despite MapCons being injective, ghc does not recognise that (MapCons t ~ ()) implies (t ~ ())
-  Add xs (Array sh e) -> unsafeCoerce $ let (n, sh') = uncons sh in Add (unconsArrays xs i) (Array sh' e)
 
-concatArrays :: [ArrayTypeShapes t] -> ArrayTypeShapes (MapCons t)
+unconsArrays :: forall s t. s ~ MapCons t => ValArr s -> Int -> ValArr t
+unconsArrays (x :: ValArr (MapCons t)) i = case x of
+  EmptyArr -> unsafeCoerce EmptyArr -- despite MapCons being injective, ghc does not recognise that (MapCons t ~ ()) implies (t ~ ())
+  PushArr xs (Array sh e :: Array shT eT)
+    | Just Refl <- matchShapeType @shT @Z -> error "impossible type due to 'MapCons'"
+    | otherwise -> let (n, sh') = uncons (unsafeCoerce $ toElt @shT sh) in unsafeCoerce $ PushArr (unconsArrays (unsafeCoerce xs) i) (Array sh' _) -- another unsafecoerce :(
+
+concatArrays :: [ValArr t] -> ValArr (MapCons t)
 concatArrays = undefined -- TODO concat the arrays (slowly)
 
 
