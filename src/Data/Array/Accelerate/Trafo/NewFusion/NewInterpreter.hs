@@ -15,6 +15,7 @@
 {-# LANGUAGE StandaloneDeriving     #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE PolyKinds              #-}
+{-# LANGUAGE FlexibleInstances      #-}
 
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_HADDOCK prune #-}
@@ -39,7 +40,6 @@ module Data.Array.Accelerate.Trafo.NewFusion.NewInterpreter
 where
 
 -- standard libraries
-
 import           Control.Monad
 import           Control.Monad.ST
 import           Data.Bits
@@ -56,7 +56,6 @@ import           Prelude                 hiding ( (!!)
                                                 , sum
                                                 )
 -- friends
-
 import           Data.Array.Accelerate.Trafo.NewFusion.AST
                                          hiding ( PreLabelledAcc(..) )
 
@@ -84,78 +83,78 @@ import qualified Data.Array.Accelerate.Trafo   as AST
 import           Control.Monad.State.Strict
 import           Data.Foldable
 import           Data.Maybe
-
-
 import           Data.Array.Accelerate.Analysis.Match
 
-{-
-type family MapConsShapes a = b | b -> a where
-  MapConsShapes () = ()
-  MapConsShapes (tup, (a, sh)) = (MapConsShapes tup, (a, sh:.Int))
 
--}
+
 
 data ValArr env where
   EmptyArr :: ValArr ()
   PushArr  :: (Shape sh, Elt e) => ValArr env -> Array sh e -> ValArr (env, Array sh e)
 
+
+
+
+
+-- Typeclass/exists attempt: would probably work for writing evalIR, but I can't give the IR GADT good types like this
+--like AST.Exists, but with a typeclass constraint on the environment
+
+data ExistsArrayEnv where
+  ExistsAE :: ArrayEnv env => env -> ExistsArrayEnv
+
+class ArrayEnv env where
+  combine :: [env] -> ExistsArrayEnv -- what you really want, is combine :: [env] -> MapCons env
+  split   :: env -> [ExistsArrayEnv] --                          split   :: env -> [MapUncons env]
+
+
+instance ArrayEnv () where
+  combine [] = ExistsAE ()
+  combine _ = error "rippie"
+  split () = [ExistsAE ()]
+
+instance (ArrayEnv env, Shape sh, Elt e) => ArrayEnv (env, Array sh e) where
+  combine [] = error "oopsie"
+  combine xs = undefined -- TODO
+  split = undefined      -- TODO
+
+-- end typeclass/exists attempt
+
+
+
+
+-- type family attempt: looks great on the GADT, but am stuck writing evalIR
+-- for example, eventhough MapCons is an 'injective type family', GHC does not
+-- recognise that (MapCons t ~ ()) implies (t ~ ()) :(
+
 type family MapCons a = b | b -> a where
   MapCons () = ()
   MapCons (a, Array sh e) = (MapCons a, Array (sh:.Int) e)
 
-
-
 type MapUncons b = forall a. MapCons a ~ b => a
-
-
 
 type family HorizontalFusion left right where
   HorizontalFusion () right = right
   HorizontalFusion (left, a) right = (HorizontalFusion left right, a)
-{-
-
-type family ToArray a = b | b -> a where
-  ToArray (a, sh) = Array sh a
+-- end type family attempt
 
 
-type family Snd a where
-  Snd (_,x) = x
+-- not tried yet: instead of replicating and slicing the arrays in the inputs and outputs explicitly,
+-- make 'phantom arrays' that hold functions to access the arrays they are a slice of
 
-type family MapToArray a = b | b -> a where
-  MapToArray () = ()
-  MapToArray (tup, x) = (MapToArray tup, ToArray x)
 
-type family MapSnd a where
-  MapSnd () = ()
-  MapSnd (tup, x) = (MapSnd tup, Snd x)
--}
-{-
-apparently this isn't that easy; this type family typechecks but using it is harder than "_ :: MapTupList Snd a"
-type family MapTupList f a where
-  MapTupList _ () = ()
-  MapTupList f (tup, a) = (MapTupList f tup, f a)
-  -}
-{-
-data ArrayTypeShapes tup where
-  None  ::ArrayTypeShapes ()
-  Add   ::(Elt e, Shape sh, Typeable tup)
-        => ArrayTypeShapes tup
-        -> Array sh e
-        -> ArrayTypeShapes (tup, Array sh e)
-deriving instance Typeable ArrayTypeShapes
--}
+
+
+
+--IR
 data IntermediateRep inputs outputs where
   Void ::IntermediateRep () ()
   Id   ::(Elt e, Shape sh)
        => IntermediateRep a b
        -> IntermediateRep (a, Array sh e) (b, Array sh e)
-
   For  ::IntermediateRep ins outs
-       -> Int -- for (i=0;i<INT;i++) :)
+       -> Int
        -> IntermediateRep (MapCons ins) (MapCons outs)
-
   -- vertical
-
   Before :: LoopBody        a b
          -> IntermediateRep b c
          -> IntermediateRep a c
@@ -163,16 +162,14 @@ data IntermediateRep inputs outputs where
   After  ::IntermediateRep a b
          -> LoopBody        b c
          -> IntermediateRep a c
-
-  -- diagonal, TODO update
-
+  -- diagonal
   Before' ::LoopBody        a b
           -> IntermediateRep b c
           -> IntermediateRep a (HorizontalFusion b c)
   After' ::IntermediateRep a b
          -> LoopBody        b c
          -> IntermediateRep a (HorizontalFusion b c)
-
+  -- horizontal
   Besides ::LoopBody        a b
           -> IntermediateRep a c
           -> IntermediateRep a (HorizontalFusion b c)
@@ -188,30 +185,26 @@ data LoopBody inputs outputs where
 data LoopBody' input output where
   OneToOne ::s -> (a -> State s b)
            -> LoopBody' (Array DIM0 a) (Array DIM0 b)
-
   -- the Bool signifies whether this is the last 'a'
   ManyToOne :: Int --insize
             -> s -> (a -> Bool -> State s (Maybe b))
             -> LoopBody' (Array DIM1 a) (Array DIM0 b)
-
   -- state seems fairly useless here, but for consistency
   OneToMany ::s -> (a -> State s [b])
             -> Int --outsize
             -> LoopBody' (Array DIM0 a) (Array DIM1 b)
-
   -- the Bool signifies whether this is the last 'a'
   ManyToMany :: Int --insize
              -> s -> (a -> Bool -> State s (Maybe b))
              -> Int --outsize
              -> LoopBody' (Array DIM1 a) (Array DIM1 b)
-{-
+
 evalIR
-  :: IntermediateRep (ArraysR inputs) (ArraysR outputs)
-  -> MapToArray inputs
-  -> MapSnd outputs
-  -> MapToArray outputs
-evalIR ir input outputshape = undefined
--}
+  :: IntermediateRep inputs outputs
+  -> Val inputs
+  -> Val outputs
+evalIR ir input = undefined
+
 
 evalIR'
   :: IntermediateRep inputs outputs
@@ -236,12 +229,19 @@ fuseHorizontal :: ValArr a -> ValArr b -> ValArr (HorizontalFusion a b)
 fuseHorizontal = undefined
 
 
-unconsArrays :: forall s t. s ~ MapCons t => ValArr s -> Int -> ValArr t
+unconsArrays :: ValArr (MapCons t) -> Int -> ValArr t
 unconsArrays (x :: ValArr (MapCons t)) i = case x of
-  EmptyArr -> unsafeCoerce EmptyArr -- despite MapCons being injective, ghc does not recognise that (MapCons t ~ ()) implies (t ~ ())
-  PushArr xs (Array sh e :: Array shT eT)
-    | Just Refl <- matchShapeType @shT @Z -> error "impossible type due to 'MapCons'"
-    | otherwise -> let (n, sh') = uncons (unsafeCoerce $ toElt @shT sh) in unsafeCoerce $ PushArr (unconsArrays (unsafeCoerce xs) i) (Array sh' _) -- another unsafecoerce :(
+  EmptyArr
+    | Just (Refl :: t :~: ()) <- unsafeCoerce ()
+      -> EmptyArr -- despite MapCons being injective, ghc does not recognise that (MapCons t ~ ()) implies (t ~ ())
+  PushArr xs (Array sh e) ->
+    let sizes = shapeToList sh
+        newsizes = (listToShape $ init sizes) :: hey -- safe, because MapCons implies that sizes is nonempty
+        thissize = last sizes
+    in PushArr (unconsArrays xs i) (Array newsizes _)
+{-  | Just Refl <- matchShapeType @shT @Z -> error "impossible type due to 'MapCons'"
+    | otherwise -> let (n, sh') = uncons (toElt @shT sh) in PushArr (unconsArrays xs i) (Array sh' _) -- still not recognising that sh :~: sh' :. Int -}
+
 
 concatArrays :: [ValArr t] -> ValArr (MapCons t)
 concatArrays = undefined -- TODO concat the arrays (slowly)
