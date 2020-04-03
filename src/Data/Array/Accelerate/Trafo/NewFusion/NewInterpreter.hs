@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleContexts       #-}
 {-# LANGUAGE UndecidableInstances   #-}
+{-# LANGUAGE AllowAmbiguousTypes    #-}
 {-# LANGUAGE IncoherentInstances    #-}
 {-# LANGUAGE GADTs                  #-}
 {-# LANGUAGE RankNTypes             #-}
@@ -10,7 +11,9 @@
 {-# LANGUAGE PolyKinds              #-}
 {-# LANGUAGE EmptyCase              #-}
 {-# LANGUAGE FlexibleInstances      #-}
+{-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE BangPatterns           #-}
+{-# LANGUAGE StandaloneDeriving           #-}
 
 
 {-# OPTIONS_GHC -fno-warn-missing-methods #-} -- making Neg1 an instance of these typeclasses is, in some cases, an ugly hack and not meaningful. You should never have an array element of type Neg1
@@ -82,10 +85,9 @@ import Data.Foldable
 -- import Data.Array.Accelerate.Type
 import Data.Type.Bool
 
-import System.IO.Unsafe
+-- import Data.Array.Accelerate.Analysis.Match
 
-
-
+import Unsafe.Coerce
 
 
 
@@ -112,7 +114,12 @@ instance (Elt a, Shape a) => ShapeIsh a where
   totalSize = size
 instance ShapeIsh Neg1 where
   totalSize _ = 1
-
+class ToValue f where
+  getValue :: Maybe (f :~: 'True)
+instance ToValue 'True where
+  getValue = Just Refl
+instance ToValue 'False where
+  getValue = Nothing
 
 
 
@@ -127,7 +134,13 @@ data Transform from to where
        => Transform from to
        -> Transform from (to, Array sh e)
 
+deriving instance Show (Transform a b)
+deriving instance Eq (Transform a b)
 
+-- compareTransform :: Transform a b -> Transform c b -> Maybe (a :~: c)
+-- compareTransform (Skip f) (Skip g) = compareTransform f g
+-- compareTransform Id Id = Just Refl
+-- compareTransform (Fn i f) (Fn j g) =
 
 compose :: Transform b c -> Transform a b -> Transform a c
 compose Id x = x
@@ -145,18 +158,18 @@ i $* (Skip x) = Skip (i $* x)
 
 --IR
 data IntermediateRep permanentIn tempIn out where
-  Void :: IntermediateRep () () ()
+  Void :: IntermediateRep pin () ()
   -- Id   ::(Elt e, Shape sh)
   --      => IntermediateRep a b
   --      -> IntermediateRep (a, Array sh e) (b, Array sh e)
-
   -- Basic control flow
   For  :: IntermediateRep pin tin out
        -> Int -- The number of times to loop
        -> Transform tin tin' -- These transforms should represent the offset of the second iteration,
        -> Transform out out' -- number 1, as they will get multiplied by the iteration counter
        -> IntermediateRep pin tin' out'
-  Simple :: LoopBody pin a b x y
+  Simple :: ToValue y
+         => LoopBody pin a b x y
          -> IntermediateRep pin a b
 
   -- Vertical fusion
@@ -189,30 +202,28 @@ data IntermediateRep permanentIn tempIn out where
           -> IntermediateRep pin a hor
 
 data LoopBody permIn tempIn out fusein fuseout where
+  Use :: (Shape sh, Elt e) -- TODO only holds an index, should maybe add an (Int -> Int) argument
+      => Array sh e
+      -> IORef Int
+      -> LoopBody pin a b fin fout
+      -> LoopBody pin a (b, Array DIM0 e) fin fout
   Base :: LoopBody  pin () () 'True 'True
   Take  :: LoopBody' pin (Array sh1 a) (Array sh2 b)
         -> LoopBody  pin c d fin fout
         -> LoopBody  pin (c, Array sh1 a) (d, Array sh2 b) (fin && Canfuse sh1) (fout && Canfuse sh2)
-  Take' :: LoopBody' pin () (Array sh2 b)
-        -> LoopBody  pin c d fin fout
-        -> LoopBody  pin c                (d, Array sh2 b) fin                  (fout && Canfuse sh2)
   Drop :: LoopBody  pin a b nfin fnout
        -> LoopBody  pin (a,x) (b,x) nfin nfout
 
 
 -- arrays of dimension 'negative one' can't be fused vertically at that level, they have to be 'expanded' by a for-loop to dimension 0 first.
 -- think of folds: fusing with their input happens one loop deeper than fusing with their output
--- note that arrays of dimension 'Neg1' can't actually exists, but we can create gadt's with a phantom type of 'Array Neg1 a', allowing us to 'IdxTransform' into it
+-- note that arrays of dimension 'Neg1' can't actually exist, but we can create gadt's with a phantom type of 'Array Neg1 a', allowing us to 'IdxTransform' into it
 type family Canfuse a = (b :: Bool) where
   Canfuse DIM0 = 'True
   Canfuse Neg1 = 'False
 
 -- the 'State s' requirements allow functions to keep track of their running index into the permIn, which doesn't have idxtransforms
 data LoopBody' permIn tempIn out where
-  Gen :: Elt a
-      => IORef s
-      -> (ValArr pin -> State s a)
-      -> LoopBody' pin () (Array DIM0 a)
   OneToOne :: (Elt a, Elt b)
            => IORef s
            -> (ValArr pin -> a -> State s b)
@@ -244,30 +255,42 @@ data LoopBody' permIn tempIn out where
 
 
 
-
-testIR1 :: IntermediateRep () () ((((), Array DIM1 Int), Array DIM0 Int), Array DIM0 Int)
-testIR1 = fuseDiagonal xs $ fuseHorizontal sum1 (fuseVertical scn sum2)
+-- represents the first part of normalise2', consisting of: xs, sum1, scn, and sum2.
+-- the second part (TODO) would consist of the rest: ys1, ys2 and the zipwith
+testIR1 :: IO (IntermediateRep () () ((((), Array DIM1 Int), Array DIM0 Int), Array DIM0 Int))
+testIR1 = fuseDiagonal <$> xs <*> (fuseHorizontal <$> sum1 <*> (fuseVertical <$> scn <*> sum2))
   where
-    xs :: IntermediateRep () () ((), Array DIM1 Int)
-    xs = For (Simple $ Take'
-          (Gen (unsafePerformIO . newIORef $ 3) (const $ modify (+1) >> get))
-          Base) 30 Id fortrans
-    sum1, sum2 :: IntermediateRep () ((), Array DIM1 Int) ((), Array DIM0 Int)
-    sum1 = For (Simple $ Take (ManyToOne (unsafePerformIO . newIORef $ (0, 0)) 30 (const $ modify . (+)) get) Base) 30 fortrans fortrans'
-    sum2 = sum1 -- TODO the IORef in sum2 should ofcourse be a different one then the one in sum1...
-    scn :: IntermediateRep () ((), Array DIM1 Int) ((), Array DIM1 Int)
-    scn = For (Simple $ Take (OneToOne (unsafePerformIO . newIORef $ 0) (const $ \a -> modify (+a) >> get)) Base) 30 fortrans fortrans
-    fortrans :: Transform ((), Array DIM0 Int) ((), Array DIM1 Int)
-    fortrans = Fn 1 Id
-    fortrans' :: Transform ((), Array Neg1 Int) ((), Array DIM0 Int)
-    fortrans' = Fn 0 Id
+    xs :: IO (IntermediateRep () () ((), Array DIM1 Int))
+    xs = newIORef 0 >>= \ref -> return $
+      For (Simple $ Use (fromList (Z:.30) [4..] :: Array DIM1 Int) ref Base) 30 Id trans
+    sum1, sum2 :: IO (IntermediateRep () ((), Array DIM1 Int) ((), Array DIM0 Int))
+    sum1 = newIORef (0, 0) >>= \ref -> return $
+      For (Simple $ Take (ManyToOne ref 30 (const $ modify . (+)) get) Base) 30 trans trans'
+    sum2 = sum1
+    scn :: IO (IntermediateRep () ((), Array DIM1 Int) ((), Array DIM1 Int))
+    scn = newIORef 0 >>= \ref -> return $
+      For (Simple $ Take (OneToOne ref (const $ \a -> modify (+a) >> get)) Base) 30 trans trans
+    trans :: Transform ((), Array DIM0 Int) ((), Array DIM1 Int)
+    trans = Fn 1 Id
+    trans' :: Transform ((), Array Neg1 Int) ((), Array DIM0 Int)
+    trans' = Fn 0 Id
+
+
+
 
 -- TODO generalise
 fuseDiagonal :: IntermediateRep p a b -> IntermediateRep p b (((),c),d) -> IntermediateRep p a ((b, c), d)
 fuseDiagonal = undefined
 
-fuseVertical :: IntermediateRep p a b -> IntermediateRep p b c -> IntermediateRep p a c
-fuseVertical = undefined
+fuseVertical :: forall p a b c. IntermediateRep p a b -> IntermediateRep p b c -> IntermediateRep p a c
+fuseVertical Void a = a
+fuseVertical (For (ir :: IntermediateRep p a' b') i ti _) (For (ir' :: IntermediateRep p b'' c') i' _ to')
+  | i == i'
+  , Refl :: b' :~: b'' <- unsafeCoerce () -- oops
+    = For (fuseVertical ir ir') i ti to'
+  | otherwise = error $ "vertical fusion of 'For " ++ show i ++ "' and 'For " ++ show i' ++ "'"
+fuseVertical (Simple (lb :: LoopBody p a b x y)) x
+  | Just Refl <- getValue @y = Before _ lb x --TODO this is a mess
 
 -- TODO generalise
 fuseHorizontal :: IntermediateRep p a ((),b) -> IntermediateRep p a ((),c) -> IntermediateRep p a (((),b),c) --Exists (IntermediateRep p a)
@@ -288,6 +311,7 @@ evalIR' :: IntermediateRep pInputs tInputs outputs   -- The instruction to execu
         -> Transform outputs outputs'        -- Transform   output, to
         -> IO ()
 evalIR' Void                   _ _ _ _  _  = return ()
+-- evalIR' (Use a)                _ _ o _  to = assign to (PushEnv EmptyEnv a) o
 evalIR' (For ir n ti' to')     p t o ti to = traverse_ (\i -> evalIR' ir p t o (compose ti (i $* ti')) (compose to (i $* to'))) [0..n-1] -- each iteration, multiply the added transform by the iteration counter
 evalIR' (Simple bdy)           p t o ti to = evalLB bdy p t o   ti to
 evalIR' (Before  tmp   bdy ir) p t o ti to = evalLB bdy p t tmp ti Id              >> evalIR' ir p tmp o Id              to
@@ -311,21 +335,24 @@ evalLB Base _ x y Id Id = assign Id x y
 evalLB (Drop     lb) p (PushEnv ts t) (PushEnv os o) Id       Id       = assignArr   0     t o >> evalLB lb p ts os Id Id
 evalLB (Drop     lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) Id       = assignArr   (-i)  t o >> evalLB lb p ts os a  Id
 evalLB (Drop     lb) p (PushEnv ts t) (PushEnv os o) Id       (Fn j b) = assignArr   j     t o >> evalLB lb p ts os Id b
-evalLB (Drop     lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) (Fn j b) = assignArr   (i-j) t o >> evalLB lb p ts os a  b
+evalLB (Drop     lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) (Fn j b) = assignArr   (j-i) t o >> evalLB lb p ts os a  b
 -- Evaluate the LoopBody' and recurse
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) Id       Id       = evalLB' lb' 0 0 p t o >> evalLB lb p ts os Id Id
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) Id       = evalLB' lb' i 0 p t o >> evalLB lb p ts os a  Id
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) Id       (Fn j b) = evalLB' lb' 0 j p t o >> evalLB lb p ts os Id b
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) (Fn j b) = evalLB' lb' i j p t o >> evalLB lb p ts os a  b
+-- TODO this one is not quite right
+evalLB (Use xs r lb) p ts             (PushEnv os o) ti       Id       = readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (-i) xs o >> evalLB lb p ts os ti Id
+evalLB (Use xs r lb) p ts             (PushEnv os o) ti       (Fn j b) = readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (j-i)    xs o >> evalLB lb p ts os ti b
 -- Recurse
 evalLB lb p (PushEnv ts _) o (Skip idxt) idxo = evalLB lb p ts o idxt idxo
 evalLB lb p t (PushEnv os _) idxt (Skip idxo) = evalLB lb p t os idxt idxo
 
-evalLB (Take _ _) _ EmptyEnv _ x _ = case x of {} -- There is no Transform
-evalLB (Drop   _) _ EmptyEnv _ x _ = case x of {} -- possible for these cases,
-evalLB (Take _ _) _ _ EmptyEnv _ x = case x of {} -- so this satisfies GHC's
-evalLB (Drop   _) _ _ EmptyEnv _ x = case x of {} -- incomplete pattern check. :)
-
+evalLB Take{} _ EmptyEnv _ x _ = case x of {} -- There is no Transform
+evalLB Drop{} _ EmptyEnv _ x _ = case x of {} -- possible for these cases,
+evalLB Take{} _ _ EmptyEnv _ x = case x of {} -- so this satisfies GHC's
+evalLB Drop{} _ _ EmptyEnv _ x = case x of {} -- incomplete pattern check. :)
+evalLB Use {} _ _ EmptyEnv _ x = case x of {}
 
 
 evalLB' :: LoopBody' pinputs (Array sh1 e1) (Array sh2 e2)
@@ -378,7 +405,7 @@ assign (Skip f) a (PushEnv b _) = assign f a b
 -- or better yet: simplify LoopBody' by removing 'Drop' and making 'Base' have ()s, to completely avoid copying entire arrays
 assignArr :: forall a sh1 sh2. (Elt a, ShapeIsh sh1, Shape sh2)
           => Int
-          -> Array sh1 a
+          -> Array sh1 a -- TODO huh, did't I say that we can't have Array Neg1 a? figure out if this is bad
           -> Array sh2 a
           -> IO ()
 assignArr offset (Array x data1) (Array _ data2) =
