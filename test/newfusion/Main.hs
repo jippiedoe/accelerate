@@ -20,8 +20,8 @@ normalise2 = A.T2 ys1 ys2 where                       -- 7, 12   [1]
   sum1, sum2 :: A.Acc (A.Array A.DIM0 Int)
   xs = A.use $ A.fromList (A.Z A.:. 30) [4..]         -- 2       [0]
   sum1 = A.fold (+) 0 xs                              -- 4       [0]
-  gts = A.scanl (+) 0 xs                              -- 8       [0]
-  sum2 = A.fold (+) 0 gts                             -- 9       [0]
+  scn = A.scanl (+) 0 xs                              -- 8       [0]
+  sum2 = A.fold (+) 0 scn                             -- 9       [0]
   ys1 = A.map (`A.div` (sum1 A.! A.constant A.Z)) xs  -- 5  (7)  [1]
   ys2 = A.map (`A.div` (sum2 A.! A.constant A.Z)) xs  -- 10 (12) [1]
 
