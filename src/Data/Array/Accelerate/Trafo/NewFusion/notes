@@ -18,3 +18,16 @@ for(j=0;..;j++)
 
 
 other stack.yamls
+
+
+
+for {
+  a -> [b]
+  for {
+    map (b -> c)
+  }
+}
+
+for {
+  
+}

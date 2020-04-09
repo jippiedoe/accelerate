@@ -124,12 +124,12 @@ instance ShapeIsh Neg1 where
 
 -- 'from' is a "subset" of 'to'
 data Transform from to where
-  Id :: Transform a a
-  Fn :: (ShapeIsh sh, Shape sh')
+  Id :: Typeable a => Transform a a
+  Fn :: (ShapeIsh sh, Shape sh', Typeable from, Typeable to)
      => Int -- offset
      -> Transform from to
      -> Transform (from, Array sh e) (to, Array sh' e) -- usually, sh' == sh :. Int. But due to composition it can be nested deeper, and we also say that Neg1 is a 'subset' of Z
-  Skip :: (Elt e, ShapeIsh sh)
+  Skip :: (Elt e, ShapeIsh sh, Typeable from, Typeable to)
        => Transform from to
        -> Transform from (to, Array sh e)
 
@@ -141,7 +141,7 @@ deriving instance Eq (Transform a b)
 -- compareTransform Id Id = Just Refl
 -- compareTransform (Fn i f) (Fn j g) =
 
-compose :: Transform b c -> Transform a b -> Transform a c
+compose :: (Typeable a, Typeable b, Typeable c) => Transform b c -> Transform a b -> Transform a c
 compose Id x = x
 compose x Id = x
 compose (Skip x) y = Skip (compose x y)
@@ -172,30 +172,44 @@ data IntermediateRep permanentIn tempIn out where
          => LoopBody pin a b x y
          -> IntermediateRep pin a b
 
+
+
+    -- TODO: Before and Before' need an adjustment:
+    --       The IR should have access to the input of the LB too.
+    --       This would put it in line with the newfusion.AST vertical/diagonal concepts,
+    --       and allow horizontally fusing these constructs.
+    --       perhaps even After and After' should incorporate this,
+    --       allowing the LB to have access to the input of the IR.
+
   -- Vertical fusion
-  Before  :: ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR
+  Before  :: Typeable b
+          => ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR
           -> LoopBody        pin a b x 'True
           -> IntermediateRep pin b c
           -> IntermediateRep pin a c
-  After   :: ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR
+  After   :: Typeable b
+          => ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR
           -> IntermediateRep pin a b
           -> LoopBody        pin b c 'True x
           -> IntermediateRep pin a c
 
   -- Diagonal fusion
-  Before' :: Transform b hor
+  Before' :: (Typeable b, Typeable c)
+          => Transform b hor
           -> Transform c hor
           -> LoopBody        pin a b x 'True
           -> IntermediateRep pin b c
           -> IntermediateRep pin a hor
-  After'  :: Transform b hor
+  After'  :: (Typeable b, Typeable c)
+          => Transform b hor
           -> Transform c hor
           -> IntermediateRep pin a b
           -> LoopBody        pin b c 'True x
           -> IntermediateRep pin a hor
 
   -- Horizontal fusion
-  Besides :: Transform b hor
+  Besides :: (Typeable b, Typeable c)
+          => Transform b hor
           -> Transform c hor
           -> LoopBody        pin a b x y
           -> IntermediateRep pin a c
@@ -212,8 +226,6 @@ data LoopBody permIn tempIn out fusein fuseout where
   Take  :: LoopBody' pin (Array sh1 a) (Array sh2 b)
         -> LoopBody  pin c d fin fout
         -> LoopBody  pin (c, Array sh1 a) (d, Array sh2 b) (fin && Canfuse sh1) (fout && Canfuse sh2)
-  -- Drop :: LoopBody  pin a b nfin fnout
-  --      -> LoopBody  pin (a,x) (b,x) nfin nfout
 
 
 -- arrays of dimension 'negative one' can't be fused vertically at that level, they have to be 'expanded' by a for-loop to dimension 0 first.
@@ -223,7 +235,8 @@ type family Canfuse a = (b :: Bool) where
   Canfuse DIM0 = 'True
   Canfuse Neg1 = 'False
 
--- the 'State s' requirements allow functions to keep track of their running index into the permIn, which doesn't have idxtransforms
+-- The 'State s' requirements allow functions to keep track of their running index into the permIn, which doesn't have idxtransforms
+-- It also helps write Scans as 'OneToOne', and is essential to writing any meaningful fold-like 'ManyToOne'.
 data LoopBody' permIn tempIn out where
   OneToOne :: (Elt a, Elt b)
            => IORef s
@@ -241,11 +254,16 @@ data LoopBody' permIn tempIn out where
             -> (ValArr pin -> a -> State s [b])
             -> LoopBody' pin (Array Neg1 a) (Array DIM0 b)
 
-            -- TODO to accomodate functions resulting from something like a 'unfold . fold', we need either this constructor (and a way to deal with it), or IntermediateRep needs to allow composition of two loops
-            -- this generalisation might not be too common, but it SHOULD be allowed? Or is this an example of general composition inside of the outer loop, which is not the same as fusion across all dimensions?
-            -- not even sure whether the ILP 'allows' this fusion
-            -- there might be a way to allow IntermediateRep to contain two (or more?) loops inside of a loop while still statically avoiding non-fusion patterns?
-            -- Or we just have to promise to avoid them when constructing the IR
+
+  -- TODO to accomodate functions resulting from something like a 'unfold . fold', we need either this constructor (and a way to deal with it), or IntermediateRep needs to allow composition of two loops
+  -- this generalisation might not be too common, but it SHOULD be allowed? Or is this an example of general composition inside of the outer loop, which is not the same as fusion across all dimensions?
+  -- not even sure whether the ILP 'allows' this fusion
+  -- note that 'fold . unfold' can already be expressed!
+
+  -- there might be a way to allow IntermediateRep to contain two (or more?) loops inside of a loop while still statically avoiding non-fusion patterns?
+  -- Or we just have to promise to avoid them when constructing the IR
+  -- but maybe having non-nested loops is by definition a non-fused pattern
+
   -- ManyToMany :: (Elt a, Elt b)
   --            => IORef s
   --            -> Int -- in size
@@ -261,7 +279,7 @@ data LoopBody' permIn tempIn out where
 -- represents the first part of normalise2', consisting of: xs, sum1, scn, and sum2.
 -- the second part (TODO) would consist of the rest: ys1, ys2 and the zipwith
 testIR1 :: IO (IntermediateRep () () ((((), Array DIM1 Int), Array DIM0 Int), Array DIM0 Int))
-testIR1 = fuseDiagonal <$> xs <*> (fuseHorizontal <$> sum1 <*> join (fuseVertical <$> scn <*> sum2))
+testIR1 = fuseDiagonal <$> xs <*> (fuseHorizontal' <$> sum1 <*> join (fuseVertical <$> scn <*> sum2))
   where
     xs :: IO (IntermediateRep () () ((), Array DIM1 Int))
     xs = newIORef 0 >>= \ref -> return $
@@ -278,59 +296,46 @@ testIR1 = fuseDiagonal <$> xs <*> (fuseHorizontal <$> sum1 <*> join (fuseVertica
     trans' :: Transform ((), Array Neg1 Int) ((), Array DIM0 Int)
     trans' = Fn 0 Id
 
+fuseHorizontal' :: (Shape b, Shape c, Elt b', Elt c')
+                => IntermediateRep p a ((), Array b b')
+                -> IntermediateRep p a ((), Array c c')
+                -> IntermediateRep p a (((), Array b b'), Array c c')
+fuseHorizontal' b c = fuseHorizontal b c (Skip Id) (Fn 0 (Skip Id))
 
 
+fuseHorizontal :: forall p a b c d. (Typeable b, Typeable c, Typeable d)
+                => IntermediateRep p a b -> IntermediateRep p a c -- The IR's to fuse
+                -> Transform b d -> Transform c d                 -- Evidence that b,c ⊆ d
+                -> IntermediateRep p a d
+fuseHorizontal (For (bIR :: IntermediateRep p a' b')  bn ib ob)
+               (For (cIR :: IntermediateRep p a'' c') cn ic oc)
+               bd cd | bn == cn                  -- Ensure that the
+                     , Just Refl <- eqT @a' @a'' --  'For loops'
+                     , ib == ic                  --  are fusable
+                = case mkSmth bd cd ob oc of
+                  Exists' (Something dd bd' cd') ->
+                    For (fuseHorizontal bIR cIR bd' cd') bn ib dd
+                | otherwise = error "fuseHorizontal, FOR loops don't match"
 
-fuseHorizontal :: IntermediateRep p a ((),b) -> IntermediateRep p a ((),c) -> IntermediateRep p a (((),b),c)
-fuseHorizontal = undefined
+fuseHorizontal (Simple lb) ir bd cd = Besides bd cd lb ir
+fuseHorizontal ir (Simple lb) bd cd = Besides cd bd lb ir
 
--- data Transform' a b = Transform' (Transform b a)
--- data HorizontallyFused p a b c d = HorFused (IntermediateRep p a d) (forall b' c'. Transform b b' -> Transform c c' -> Exists' (Transform d))    -- (Transform b d) (Transform c d)
--- data HorizontallyFused p a b c d = HorFused (IntermediateRep p a d) (Transform b d) (Transform c d)
-
--- asdf :: forall b c d b' c'. (Typeable b, Typeable c, Typeable d, Typeable b', Typeable c')
---      => Transform b b' -> Transform c c' -> Exists' (Transform d) -- -> Transform b b'' -> Transform c c'' -> Exists' (Transform d)
--- asdf Id Id = Exists' Id
--- asdf (Skip f) x =
-
--- makeTransformLeft :: TypeRep -> TypeRep -> Transform a b
--- makeTransformLeft a b = if a == b then Id else case typeRepArgs
-
--- fuseHorizontal :: forall p a b c. IntermediateRep p a b -> IntermediateRep p a c -> Exists' (IntermediateRep p a) --Exists' (HorizontallyFused p a b c)
--- fuseHorizontal (Simple lb) x = Exists' $ Besides _ _ lb x
-
--- fuseHorizontal (For (ir :: IntermediateRep p a' b') i ti to) (For (ir' :: IntermediateRep p a'' c') i' ti' to')
---   | i == i'
---   , Just Refl <- eqT @a' @a''
---     = case fuseHorizontal ir ir' of
--- {-a1-}Exists' (HorFused newir f) -> case f to to' of
---  {-a2-} Exists' newtrans -> Exists' $ HorFused (For newir i ti newtrans) (\x y -> case f (compose x to) (compose y to') of
---           Exists' haha -> Exists' _) --(\x y -> case f _ _ of _ -> _)
-
--- fuseHorizontal (For (ir :: IntermediateRep p a' b') i ti to) (For (ir' :: IntermediateRep p a'' c') i' ti' to')
+-- the difficult case: we need to rewrite x and y to use the same
+fuseHorizontal (Before t lb x) y bd cd = undefined
+-- fuseHorizontal (Before t lb irb) (For irc i ti to) bd cd
 
 
--- asdf :: forall b c d b' c'. Transform b d -> Transform c d -> Transform b' b -> Transform c' c -> Exists (Something b c d b' c')
--- asdf Id Id Id Id = Exists $ Something Id Id Id
--- asdf (Skip f) (Skip g) h i = case asdf f g h i of Exists (Something x y z) -> Exists $ Something (Skip x) y z
--- asdf (Skip (f :: Transform b smth)) (Fn a g) h (Fn b i) = case undefined of
---   ExistsArr (Proxy :: Proxy (Array sh e)) -> case undefined of
---     (Refl :: (d :~: (smth, Array sh e))) -> case asdf f g h i of
---       Exists (Something (x :: Transform smalld' smalld) y z) -> Exists $ Something (Fn b x :: Transform (smalld', Array sh e) d) (Skip y) (Fn a z)
+data Something b c d b' c' d' = Something (Transform d' d) (Transform b' d') (Transform c' d')
 
--- data Something b c d b' c' d' = Something (Transform d' d) (Transform b' d') (Transform c' d')
+mkSmth :: forall b c d b' c'. (Typeable b, Typeable c, Typeable d, Typeable b', Typeable c')
+     => Transform b d -> Transform c d -> Transform b' b -> Transform c' c -> Exists' (Something b c d b' c')
+mkSmth Id Id Id Id = Exists' $ Something Id Id Id
+mkSmth (Skip f) (Skip g) h i = case mkSmth f g h i of Exists' (Something x y z) -> Exists' $ Something (Skip x) y z
+mkSmth (Skip (f :: Transform b smth)) (Fn a g) h (Fn b i) = case undefined of
+  ExistsArr (Proxy :: Proxy (Array sh e)) -> case undefined of
+    (Refl :: (d :~: (smth, Array sh e))) -> case mkSmth f g h i of
+      Exists' (Something (x :: Transform smalld' smalld) y z) -> Exists' $ Something (Fn b x :: Transform (smalld', Array sh e) d) (Skip y) (Fn a z)
 
--- fuseHorizontal :: forall p a b c d. (Typeable p, Typeable a, Typeable b, Typeable c, Typeable d)
---                => IntermediateRep p a b -> IntermediateRep p a c -> Transform b d -> Transform c d -> IntermediateRep p a d
--- fuseHorizontal
---   (For (irb :: IntermediateRep p a' b')  ib tib tob :: IntermediateRep p a b)
---   (For (irc :: IntermediateRep p a'' c') ic tic toc :: IntermediateRep p a c)
---   tb
---   tc
---   | ib == ic
---   , Just Refl <- eqT @a' @a''
---   , tib == tic
---     = For (fuseHorizontal irb irc _ _) ib tib _
 
 -- TODO generalise type
 fuseDiagonal :: IntermediateRep p a b -> IntermediateRep p b (((),c),d) -> IntermediateRep p a ((b, c), d)
@@ -338,11 +343,12 @@ fuseDiagonal = undefined
 
 fuseVertical :: forall p a b c. IntermediateRep p a b -> IntermediateRep p b c -> IO (IntermediateRep p a c)
 fuseVertical Void a = return a
-fuseVertical (For (ir :: IntermediateRep p a' b') i ti _) (For (ir' :: IntermediateRep p b'' c') i' _ to')
-  | i == i'
-  , Just Refl <- eqT @b' @b''
-    = (\x -> For x i ti to') <$> fuseVertical ir ir'
-  | otherwise = error $ "vertical fusion of 'For " ++ show i ++ "' and 'For " ++ show i' ++ "'"
+fuseVertical (For (ir :: IntermediateRep p a' b') i ti _)
+             (For (ir' :: IntermediateRep p b'' c') i' _ to')
+              | i == i'
+              , Just Refl <- eqT @b' @b''
+                = (\x -> For x i ti to') <$> fuseVertical ir ir'
+              | otherwise = error $ "vertical fusion of 'For " ++ show i ++ "' and 'For " ++ show i' ++ "'"
 fuseVertical (Simple (lb :: LoopBody p a b x y)) ir
   | Just Refl <- eqT @'True @y = (\t -> Before t lb ir) <$> makeTemp
   | otherwise = error "verticalFusion"
@@ -385,7 +391,8 @@ evalIR :: IntermediateRep pinputs () outputs
 evalIR = undefined
 
 -- Evaluates the IR and stores the output in the provided mutable arrays
-evalIR' :: IntermediateRep pInputs tInputs outputs   -- The instruction to execute. Contains recursive IR's (ir), LoopBodies (bdy), Transforms (ti', to', bh, ch), Temporary arrays (tmp)
+evalIR' :: (Typeable pInputs, Typeable tInputs, Typeable outputs, Typeable tInputs', Typeable outputs')
+        => IntermediateRep pInputs tInputs outputs   -- The instruction to execute. Contains recursive IR's (ir), LoopBodies (bdy), Transforms (ti', to', bh, ch), Temporary arrays (tmp)
         -> ValArr          pInputs                   -- The unfused inputs, p
         -> ValArr                  tInputs'          -- The   fused inputs, t
         -> ValArr                          outputs'  -- The         output, 0
@@ -419,8 +426,8 @@ evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) Id       = evalLB'
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) Id       (Fn j b) = evalLB' lb' 0 j p t o >> evalLB lb p ts os Id b
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) (Fn j b) = evalLB' lb' i j p t o >> evalLB lb p ts os a  b
 -- TODO this one is not quite right
-evalLB (Use xs r lb) p ts             (PushEnv os o) ti       Id       = undefined --readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (-i) xs o >> evalLB lb p ts os ti Id
-evalLB (Use xs r lb) p ts             (PushEnv os o) ti       (Fn j b) = undefined --readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (j-i)    xs o >> evalLB lb p ts os ti b
+evalLB Use{} _ _ PushEnv{} _ _ = undefined --(Use xs r lb) p ts             (PushEnv os o) ti       Id        = readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (-i) xs o >> evalLB lb p ts os ti Id
+--evalLB Use{} _ _ _ _ _ = undefined --(Use xs r lb) p ts             (PushEnv os o) ti       (Fn j b)  = readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (j-i)    xs o >> evalLB lb p ts os ti b
 -- Recurse
 evalLB lb p (PushEnv ts _) o (Skip idxt) idxo = evalLB lb p ts o idxt idxo
 evalLB lb p t (PushEnv os _) idxt (Skip idxo) = evalLB lb p t os idxt idxo
