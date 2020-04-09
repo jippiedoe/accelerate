@@ -10,15 +10,16 @@
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE PolyKinds              #-}
 {-# LANGUAGE EmptyCase              #-}
+{-# LANGUAGE DeriveDataTypeable     #-}
 {-# LANGUAGE FlexibleInstances      #-}
-{-# LANGUAGE TypeApplications      #-}
-{-# LANGUAGE BangPatterns           #-}
-{-# LANGUAGE StandaloneDeriving           #-}
+{-# LANGUAGE TypeApplications       #-}
+{-# LANGUAGE StandaloneDeriving     #-}
 
 
 {-# OPTIONS_GHC -fno-warn-missing-methods #-} -- making Neg1 an instance of these typeclasses is, in some cases, an ugly hack and not meaningful. You should never have an array element of type Neg1
 {-# OPTIONS_GHC -fno-warn-unused-top-binds #-} -- TODO remove
 {-# OPTIONS_HADDOCK prune #-}
+
 
 module Data.Array.Accelerate.Trafo.NewFusion.NewInterpreter
   ( Smart.Acc
@@ -87,18 +88,22 @@ import Data.Type.Bool
 
 -- import Data.Array.Accelerate.Analysis.Match
 
-import Unsafe.Coerce
+-- import Unsafe.Coerce
+import Data.Maybe
 
 
 
 
+data Exists' f where
+  Exists' :: Typeable a => f a -> Exists' f
 
-
+data ExistsArr where
+  ExistsArr :: (Elt e, Shape sh) => Proxy (Array sh e) -> ExistsArr
 
 data ValArr env where
   EmptyEnv :: ValArr ()
-  PushEnv  :: (Shape sh, Elt e) => ValArr env -> Array sh e -> ValArr (env, Array sh e)
-
+  PushEnv  :: (Shape sh, Elt e, Typeable env) => ValArr env -> Array sh e -> ValArr (env, Array sh e)
+deriving instance Typeable ValArr
 
 data Neg1 = Neg1 deriving (Show, Typeable)
 instance ArrayElt Neg1 where
@@ -114,23 +119,17 @@ instance (Elt a, Shape a) => ShapeIsh a where
   totalSize = size
 instance ShapeIsh Neg1 where
   totalSize _ = 1
-class ToValue f where
-  getValue :: Maybe (f :~: 'True)
-instance ToValue 'True where
-  getValue = Just Refl
-instance ToValue 'False where
-  getValue = Nothing
 
 
 
 -- 'from' is a "subset" of 'to'
 data Transform from to where
   Id :: Transform a a
-  Fn :: (ShapeIsh sh, ShapeIsh sh')
+  Fn :: (ShapeIsh sh, Shape sh')
      => Int -- offset
      -> Transform from to
      -> Transform (from, Array sh e) (to, Array sh' e) -- usually, sh' == sh :. Int. But due to composition it can be nested deeper, and we also say that Neg1 is a 'subset' of Z
-  Skip :: ShapeIsh sh
+  Skip :: (Elt e, ShapeIsh sh)
        => Transform from to
        -> Transform from (to, Array sh e)
 
@@ -163,12 +162,13 @@ data IntermediateRep permanentIn tempIn out where
   --      => IntermediateRep a b
   --      -> IntermediateRep (a, Array sh e) (b, Array sh e)
   -- Basic control flow
-  For  :: IntermediateRep pin tin out
+  For  :: (Typeable tin, Typeable out, Typeable tin', Typeable out')
+       => IntermediateRep pin tin out
        -> Int -- The number of times to loop
        -> Transform tin tin' -- These transforms should represent the offset of the second iteration,
        -> Transform out out' -- number 1, as they will get multiplied by the iteration counter
        -> IntermediateRep pin tin' out'
-  Simple :: ToValue y
+  Simple :: (Typeable a, Typeable b, Typeable x, Typeable y)
          => LoopBody pin a b x y
          -> IntermediateRep pin a b
 
@@ -200,6 +200,7 @@ data IntermediateRep permanentIn tempIn out where
           -> LoopBody        pin a b x y
           -> IntermediateRep pin a c
           -> IntermediateRep pin a hor
+deriving instance Typeable IntermediateRep
 
 data LoopBody permIn tempIn out fusein fuseout where
   Use :: (Shape sh, Elt e) -- TODO only holds an index, should maybe add an (Int -> Int) argument
@@ -211,8 +212,8 @@ data LoopBody permIn tempIn out fusein fuseout where
   Take  :: LoopBody' pin (Array sh1 a) (Array sh2 b)
         -> LoopBody  pin c d fin fout
         -> LoopBody  pin (c, Array sh1 a) (d, Array sh2 b) (fin && Canfuse sh1) (fout && Canfuse sh2)
-  Drop :: LoopBody  pin a b nfin fnout
-       -> LoopBody  pin (a,x) (b,x) nfin nfout
+  -- Drop :: LoopBody  pin a b nfin fnout
+  --      -> LoopBody  pin (a,x) (b,x) nfin nfout
 
 
 -- arrays of dimension 'negative one' can't be fused vertically at that level, they have to be 'expanded' by a for-loop to dimension 0 first.
@@ -255,10 +256,12 @@ data LoopBody' permIn tempIn out where
 
 
 
+
+
 -- represents the first part of normalise2', consisting of: xs, sum1, scn, and sum2.
 -- the second part (TODO) would consist of the rest: ys1, ys2 and the zipwith
 testIR1 :: IO (IntermediateRep () () ((((), Array DIM1 Int), Array DIM0 Int), Array DIM0 Int))
-testIR1 = fuseDiagonal <$> xs <*> (fuseHorizontal <$> sum1 <*> (fuseVertical <$> scn <*> sum2))
+testIR1 = fuseDiagonal <$> xs <*> (fuseHorizontal <$> sum1 <*> join (fuseVertical <$> scn <*> sum2))
   where
     xs :: IO (IntermediateRep () () ((), Array DIM1 Int))
     xs = newIORef 0 >>= \ref -> return $
@@ -278,23 +281,102 @@ testIR1 = fuseDiagonal <$> xs <*> (fuseHorizontal <$> sum1 <*> (fuseVertical <$>
 
 
 
--- TODO generalise
+fuseHorizontal :: IntermediateRep p a ((),b) -> IntermediateRep p a ((),c) -> IntermediateRep p a (((),b),c)
+fuseHorizontal = undefined
+
+-- data Transform' a b = Transform' (Transform b a)
+-- data HorizontallyFused p a b c d = HorFused (IntermediateRep p a d) (forall b' c'. Transform b b' -> Transform c c' -> Exists' (Transform d))    -- (Transform b d) (Transform c d)
+-- data HorizontallyFused p a b c d = HorFused (IntermediateRep p a d) (Transform b d) (Transform c d)
+
+-- asdf :: forall b c d b' c'. (Typeable b, Typeable c, Typeable d, Typeable b', Typeable c')
+--      => Transform b b' -> Transform c c' -> Exists' (Transform d) -- -> Transform b b'' -> Transform c c'' -> Exists' (Transform d)
+-- asdf Id Id = Exists' Id
+-- asdf (Skip f) x =
+
+-- makeTransformLeft :: TypeRep -> TypeRep -> Transform a b
+-- makeTransformLeft a b = if a == b then Id else case typeRepArgs
+
+-- fuseHorizontal :: forall p a b c. IntermediateRep p a b -> IntermediateRep p a c -> Exists' (IntermediateRep p a) --Exists' (HorizontallyFused p a b c)
+-- fuseHorizontal (Simple lb) x = Exists' $ Besides _ _ lb x
+
+-- fuseHorizontal (For (ir :: IntermediateRep p a' b') i ti to) (For (ir' :: IntermediateRep p a'' c') i' ti' to')
+--   | i == i'
+--   , Just Refl <- eqT @a' @a''
+--     = case fuseHorizontal ir ir' of
+-- {-a1-}Exists' (HorFused newir f) -> case f to to' of
+--  {-a2-} Exists' newtrans -> Exists' $ HorFused (For newir i ti newtrans) (\x y -> case f (compose x to) (compose y to') of
+--           Exists' haha -> Exists' _) --(\x y -> case f _ _ of _ -> _)
+
+-- fuseHorizontal (For (ir :: IntermediateRep p a' b') i ti to) (For (ir' :: IntermediateRep p a'' c') i' ti' to')
+
+
+-- asdf :: forall b c d b' c'. Transform b d -> Transform c d -> Transform b' b -> Transform c' c -> Exists (Something b c d b' c')
+-- asdf Id Id Id Id = Exists $ Something Id Id Id
+-- asdf (Skip f) (Skip g) h i = case asdf f g h i of Exists (Something x y z) -> Exists $ Something (Skip x) y z
+-- asdf (Skip (f :: Transform b smth)) (Fn a g) h (Fn b i) = case undefined of
+--   ExistsArr (Proxy :: Proxy (Array sh e)) -> case undefined of
+--     (Refl :: (d :~: (smth, Array sh e))) -> case asdf f g h i of
+--       Exists (Something (x :: Transform smalld' smalld) y z) -> Exists $ Something (Fn b x :: Transform (smalld', Array sh e) d) (Skip y) (Fn a z)
+
+-- data Something b c d b' c' d' = Something (Transform d' d) (Transform b' d') (Transform c' d')
+
+-- fuseHorizontal :: forall p a b c d. (Typeable p, Typeable a, Typeable b, Typeable c, Typeable d)
+--                => IntermediateRep p a b -> IntermediateRep p a c -> Transform b d -> Transform c d -> IntermediateRep p a d
+-- fuseHorizontal
+--   (For (irb :: IntermediateRep p a' b')  ib tib tob :: IntermediateRep p a b)
+--   (For (irc :: IntermediateRep p a'' c') ic tic toc :: IntermediateRep p a c)
+--   tb
+--   tc
+--   | ib == ic
+--   , Just Refl <- eqT @a' @a''
+--   , tib == tic
+--     = For (fuseHorizontal irb irc _ _) ib tib _
+
+-- TODO generalise type
 fuseDiagonal :: IntermediateRep p a b -> IntermediateRep p b (((),c),d) -> IntermediateRep p a ((b, c), d)
 fuseDiagonal = undefined
 
-fuseVertical :: forall p a b c. IntermediateRep p a b -> IntermediateRep p b c -> IntermediateRep p a c
-fuseVertical Void a = a
+fuseVertical :: forall p a b c. IntermediateRep p a b -> IntermediateRep p b c -> IO (IntermediateRep p a c)
+fuseVertical Void a = return a
 fuseVertical (For (ir :: IntermediateRep p a' b') i ti _) (For (ir' :: IntermediateRep p b'' c') i' _ to')
   | i == i'
-  , Refl :: b' :~: b'' <- unsafeCoerce () -- oops
-    = For (fuseVertical ir ir') i ti to'
+  , Just Refl <- eqT @b' @b''
+    = (\x -> For x i ti to') <$> fuseVertical ir ir'
   | otherwise = error $ "vertical fusion of 'For " ++ show i ++ "' and 'For " ++ show i' ++ "'"
-fuseVertical (Simple (lb :: LoopBody p a b x y)) x
-  | Just Refl <- getValue @y = Before _ lb x --TODO this is a mess
+fuseVertical (Simple (lb :: LoopBody p a b x y)) ir
+  | Just Refl <- eqT @'True @y = (\t -> Before t lb ir) <$> makeTemp
+  | otherwise = error "verticalFusion"
+fuseVertical ir (Simple (lb :: LoopBody p b c x y))
+  | Just Refl <- eqT @'True @x = (\t -> After  t ir lb) <$> makeTemp
+  | otherwise = error "verticalFusion"
+fuseVertical _ _ = undefined -- TODO
 
--- TODO generalise
-fuseHorizontal :: IntermediateRep p a ((),b) -> IntermediateRep p a ((),c) -> IntermediateRep p a (((),b),c) --Exists (IntermediateRep p a)
-fuseHorizontal = undefined
+makeTemp :: forall a. Typeable a => IO (ValArr a)
+makeTemp = do
+  exiEnv <- makeTemp' (typeRep (Proxy :: Proxy a))
+  case exiEnv of -- forced to match on EmptyEnv and PushEnv to convince the typechecker of Typeable a; but the cases are identical
+    Exists EmptyEnv -> return . fromJust $ cast EmptyEnv -- fromJust is needed because makeTemp' gives no evidence that the ValArr is of the correct type, but we know it is.
+    Exists (PushEnv env arr) -> return . fromJust . cast $ PushEnv env arr
+
+makeTemp' :: TypeRep -> IO (Exists ValArr)
+makeTemp' typrep = case typeRepArgs typrep of
+  [] -> return $ Exists EmptyEnv
+  [envrep, arrayTypeRep] -> do
+    existsenv <- makeTemp' envrep
+    case existsenv of -- forced to match on EmptyEnv and PushEnv to convince the typechecker of Typeable a; but the cases are identical
+      Exists env@EmptyEnv -> case typeRepArgs arrayTypeRep of
+        [shaperep, _] -> if shaperep == typeRep (Proxy :: Proxy Z) --TODO check for other elt types
+          then Exists . PushEnv env <$> ((Array (fromElt Z) <$> newArrayData 1) :: IO (Array Z Int))
+          else error $ "Not a Z:" ++ show shaperep
+        _ -> error "I'm a bad person"
+      Exists env@(PushEnv _ _) -> case typeRepArgs arrayTypeRep of
+        [shaperep, _] -> if shaperep == typeRep (Proxy :: Proxy Z) --TODO check for other elt types
+          then Exists . PushEnv env <$> ((Array (fromElt Z) <$> newArrayData 1) :: IO (Array Z Int))
+          else error $ "Not a Z:" ++ show shaperep
+        _ -> error "I'm a bad person"
+  _ -> error "I'm a bad person"
+
+
 
 
 evalIR :: IntermediateRep pinputs () outputs
@@ -307,8 +389,8 @@ evalIR' :: IntermediateRep pInputs tInputs outputs   -- The instruction to execu
         -> ValArr          pInputs                   -- The unfused inputs, p
         -> ValArr                  tInputs'          -- The   fused inputs, t
         -> ValArr                          outputs'  -- The         output, 0
-        -> Transform tInputs tInputs'        -- Transform   inputs, ti
-        -> Transform outputs outputs'        -- Transform   output, to
+        -> Transform tInputs tInputs'                -- Transform   inputs, ti
+        -> Transform outputs outputs'                -- Transform   output, to
         -> IO ()
 evalIR' Void                   _ _ _ _  _  = return ()
 -- evalIR' (Use a)                _ _ o _  to = assign to (PushEnv EmptyEnv a) o
@@ -330,29 +412,24 @@ evalLB :: LoopBody pinputs tinputs outputs x y
        -> Transform tinputs tinputs'
        -> Transform outputs outputs'
        -> IO ()
-evalLB Base _ x y Id Id = assign Id x y
--- Copy the top array, and recurse
-evalLB (Drop     lb) p (PushEnv ts t) (PushEnv os o) Id       Id       = assignArr   0     t o >> evalLB lb p ts os Id Id
-evalLB (Drop     lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) Id       = assignArr   (-i)  t o >> evalLB lb p ts os a  Id
-evalLB (Drop     lb) p (PushEnv ts t) (PushEnv os o) Id       (Fn j b) = assignArr   j     t o >> evalLB lb p ts os Id b
-evalLB (Drop     lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) (Fn j b) = assignArr   (j-i) t o >> evalLB lb p ts os a  b
+evalLB Base _ _ _ Id Id = return ()
 -- Evaluate the LoopBody' and recurse
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) Id       Id       = evalLB' lb' 0 0 p t o >> evalLB lb p ts os Id Id
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) Id       = evalLB' lb' i 0 p t o >> evalLB lb p ts os a  Id
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) Id       (Fn j b) = evalLB' lb' 0 j p t o >> evalLB lb p ts os Id b
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) (Fn j b) = evalLB' lb' i j p t o >> evalLB lb p ts os a  b
 -- TODO this one is not quite right
-evalLB (Use xs r lb) p ts             (PushEnv os o) ti       Id       = readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (-i) xs o >> evalLB lb p ts os ti Id
-evalLB (Use xs r lb) p ts             (PushEnv os o) ti       (Fn j b) = readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (j-i)    xs o >> evalLB lb p ts os ti b
+evalLB (Use xs r lb) p ts             (PushEnv os o) ti       Id       = undefined --readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (-i) xs o >> evalLB lb p ts os ti Id
+evalLB (Use xs r lb) p ts             (PushEnv os o) ti       (Fn j b) = undefined --readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (j-i)    xs o >> evalLB lb p ts os ti b
 -- Recurse
 evalLB lb p (PushEnv ts _) o (Skip idxt) idxo = evalLB lb p ts o idxt idxo
 evalLB lb p t (PushEnv os _) idxt (Skip idxo) = evalLB lb p t os idxt idxo
 
-evalLB Take{} _ EmptyEnv _ x _ = case x of {} -- There is no Transform
-evalLB Drop{} _ EmptyEnv _ x _ = case x of {} -- possible for these cases,
+                                              -- There is no Transform
+evalLB Take{} _ EmptyEnv _ x _ = case x of {} -- possible for these cases,
 evalLB Take{} _ _ EmptyEnv _ x = case x of {} -- so this satisfies GHC's
-evalLB Drop{} _ _ EmptyEnv _ x = case x of {} -- incomplete pattern check. :)
-evalLB Use {} _ _ EmptyEnv _ x = case x of {}
+evalLB Use {} _ _ EmptyEnv _ x = case x of {} -- incomplete pattern check
+
 
 
 evalLB' :: LoopBody' pinputs (Array sh1 e1) (Array sh2 e2)
@@ -389,27 +466,3 @@ evalLB' (OneToMany sref n f) inoff outoff p (Array _ a) (Array _ b) = do
   writeIORef sref (s, tail bs, i')
   unsafeWriteArrayData b outoff . fromElt . head $ bs
 
-
--- assign the value 'from' to the internals of 'to'
-assign :: Transform a b
-       -> ValArr a
-       -> ValArr b
-       -> IO ()
-assign Id EmptyEnv EmptyEnv = return ()
-assign Id       (PushEnv a from) (PushEnv b to) = assignArr 0 from to >> assign Id a b
-assign (Fn i f) (PushEnv a from) (PushEnv b to) = assignArr i from to >> assign f  a b
-assign (Skip f) a (PushEnv b _) = assign f a b
-
-
--- TODO specialise if sh1 and sh2 match (and the offset is 0), if that allows to avoid copying elementwise
--- or better yet: simplify LoopBody' by removing 'Drop' and making 'Base' have ()s, to completely avoid copying entire arrays
-assignArr :: forall a sh1 sh2. (Elt a, ShapeIsh sh1, Shape sh2)
-          => Int
-          -> Array sh1 a -- TODO huh, did't I say that we can't have Array Neg1 a? figure out if this is bad
-          -> Array sh2 a
-          -> IO ()
-assignArr offset (Array x data1) (Array _ data2) =
-  let go !i !n = if i >= n then return () else do
-                              a <- unsafeReadArrayData data1 i
-                              unsafeWriteArrayData data2 (i + offset) a
-      in go 0 (totalSize (toElt x :: sh1))
