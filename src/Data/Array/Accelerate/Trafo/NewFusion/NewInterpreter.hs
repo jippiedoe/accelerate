@@ -105,6 +105,11 @@ data ValArr env where
   PushEnv  :: (Shape sh, Elt e, Typeable env) => ValArr env -> Array sh e -> ValArr (env, Array sh e)
 deriving instance Typeable ValArr
 
+--TODO refactor many other places to use ValArr' :)
+data ValArr' env where
+  ValArr' :: (Typeable env, Typeable env')
+    => Transform env env' -> ValArr env' -> ValArr' env
+
 data Neg1 = Neg1 deriving (Show, Typeable)
 instance ArrayElt Neg1 where
   type ArrayPtrs Neg1 = Neg1
@@ -172,6 +177,12 @@ data IntermediateRep permanentIn tempIn out where
          => LoopBody pin a b x y
          -> IntermediateRep pin a b
 
+  -- this Transform should only ever contain 'Fn 0 _' and "Skip _" and "Id",
+  -- if it contains an index transform you should use 'For'.
+  Weaken :: Typeable a
+         => Transform a a'
+         -> IntermediateRep p a  b
+         -> IntermediateRep p a' b
 
 
     -- TODO: Before and Before' need an adjustment:
@@ -182,16 +193,21 @@ data IntermediateRep permanentIn tempIn out where
     --       allowing the LB to have access to the input of the IR.
 
   -- Vertical fusion
-  Before  :: Typeable b
-          => ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR
+  Before  :: (Typeable a, Typeable b)
+          => Transform a c -- only for weakening,
+          -> Transform b c -- no index transforms!
+          -> ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR
           -> LoopBody        pin a b x 'True
-          -> IntermediateRep pin b c
-          -> IntermediateRep pin a c
+          -> IntermediateRep pin c d
+          -> IntermediateRep pin a d
   After   :: Typeable b
-          => ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR
+          => Transform a c -- only for weakening,
+          -> Transform b c -- no index transforms!
+          -> ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR
           -> IntermediateRep pin a b
-          -> LoopBody        pin b c 'True x
-          -> IntermediateRep pin a c
+          -> LoopBody        pin c d 'True x
+          -> IntermediateRep pin a d
+
 
   -- Diagonal fusion
   Before' :: (Typeable b, Typeable c)
@@ -223,9 +239,12 @@ data LoopBody permIn tempIn out fusein fuseout where
       -> LoopBody pin a b fin fout
       -> LoopBody pin a (b, Array DIM0 e) fin fout
   Base :: LoopBody  pin () () 'True 'True
-  Take  :: LoopBody' pin (Array sh1 a) (Array sh2 b)
-        -> LoopBody  pin c d fin fout
-        -> LoopBody  pin (c, Array sh1 a) (d, Array sh2 b) (fin && Canfuse sh1) (fout && Canfuse sh2)
+  Take :: LoopBody' pin (Array sh1 a) (Array sh2 b)
+       -> LoopBody  pin c d fin fout
+       -> LoopBody  pin (c, Array sh1 a)  (d,               Array sh2 b) (fin && Canfuse sh1) (fout && Canfuse sh2)
+  -- Give :: LoopBody' pin (Array sh1 a) (Array sh2 b)
+  --      -> LoopBody  pin c d fin fout
+  --      -> LoopBody  pin (c, Array sh1 a) ((d, Array sh1 a), Array sh2 b) (fin && Canfuse sh1) (fout && Canfuse sh2)
 
 
 -- arrays of dimension 'negative one' can't be fused vertically at that level, they have to be 'expanded' by a for-loop to dimension 0 first.
@@ -316,14 +335,17 @@ fuseHorizontal (For (bIR :: IntermediateRep p a' b')  bn ib ob)
                   Exists' (Something dd bd' cd') ->
                     For (fuseHorizontal bIR cIR bd' cd') bn ib dd
                 | otherwise = error "fuseHorizontal, FOR loops don't match"
-
 fuseHorizontal (Simple lb) ir bd cd = Besides bd cd lb ir
 fuseHorizontal ir (Simple lb) bd cd = Besides cd bd lb ir
+fuseHorizontal (Before ac bc b lb ir) y bd cd = Before ac bc b lb (fuseHorizontal ir (Weaken ac y) bd cd)
+fuseHorizontal x (Before ac bc b lb ir) bd cd = Before ac bc b lb (fuseHorizontal (Weaken ac x) ir bd cd)
 
--- the difficult case: we need to rewrite x and y to use the same
-fuseHorizontal (Before t lb x) y bd cd = undefined
--- fuseHorizontal (Before t lb irb) (For irc i ti to) bd cd
+fuseHorizontal Void x _ Id = x
+fuseHorizontal Void _ _ _ = error "unreachable? I guess so"
+fuseHorizontal x Void Id _ = x
+fuseHorizontal _ Void _ _ = error "unreachable? I guess so"
 
+fuseHorizontal _ _ _ _ = undefined
 
 data Something b c d b' c' d' = Something (Transform d' d) (Transform b' d') (Transform c' d')
 
@@ -331,11 +353,11 @@ mkSmth :: forall b c d b' c'. (Typeable b, Typeable c, Typeable d, Typeable b', 
      => Transform b d -> Transform c d -> Transform b' b -> Transform c' c -> Exists' (Something b c d b' c')
 mkSmth Id Id Id Id = Exists' $ Something Id Id Id
 mkSmth (Skip f) (Skip g) h i = case mkSmth f g h i of Exists' (Something x y z) -> Exists' $ Something (Skip x) y z
-mkSmth (Skip (f :: Transform b smth)) (Fn a g) h (Fn b i) = case undefined of
+mkSmth (Skip (f :: Transform b smth)) (Fn a g) h (Fn b i) = case undefined of --TODO replace these undefined's
   ExistsArr (Proxy :: Proxy (Array sh e)) -> case undefined of
     (Refl :: (d :~: (smth, Array sh e))) -> case mkSmth f g h i of
       Exists' (Something (x :: Transform smalld' smalld) y z) -> Exists' $ Something (Fn b x :: Transform (smalld', Array sh e) d) (Skip y) (Fn a z)
-
+mkSmth _ _ _ _ = undefined --TODO this should be possible, it's just a pain to write
 
 -- TODO generalise type
 fuseDiagonal :: IntermediateRep p a b -> IntermediateRep p b (((),c),d) -> IntermediateRep p a ((b, c), d)
@@ -349,12 +371,13 @@ fuseVertical (For (ir :: IntermediateRep p a' b') i ti _)
               , Just Refl <- eqT @b' @b''
                 = (\x -> For x i ti to') <$> fuseVertical ir ir'
               | otherwise = error $ "vertical fusion of 'For " ++ show i ++ "' and 'For " ++ show i' ++ "'"
-fuseVertical (Simple (lb :: LoopBody p a b x y)) ir
-  | Just Refl <- eqT @'True @y = (\t -> Before t lb ir) <$> makeTemp
-  | otherwise = error "verticalFusion"
-fuseVertical ir (Simple (lb :: LoopBody p b c x y))
-  | Just Refl <- eqT @'True @x = (\t -> After  t ir lb) <$> makeTemp
-  | otherwise = error "verticalFusion"
+--TODO weaken 'ir'
+-- fuseVertical (Simple (lb :: LoopBody p a b x y)) ir
+--   | Just Refl <- eqT @'True @y = (\t -> Before t lb ir) <$> makeTemp
+--   | otherwise = error "verticalFusion"
+-- fuseVertical ir (Simple (lb :: LoopBody p b c x y))
+--   | Just Refl <- eqT @'True @x = (\t -> After  t ir lb) <$> makeTemp
+--   | otherwise = error "verticalFusion"
 fuseVertical _ _ = undefined -- TODO
 
 makeTemp :: forall a. Typeable a => IO (ValArr a)
@@ -399,17 +422,30 @@ evalIR' :: (Typeable pInputs, Typeable tInputs, Typeable outputs, Typeable tInpu
         -> Transform tInputs tInputs'                -- Transform   inputs, ti
         -> Transform outputs outputs'                -- Transform   output, to
         -> IO ()
-evalIR' Void                   _ _ _ _  _  = return ()
--- evalIR' (Use a)                _ _ o _  to = assign to (PushEnv EmptyEnv a) o
-evalIR' (For ir n ti' to')     p t o ti to = traverse_ (\i -> evalIR' ir p t o (compose ti (i $* ti')) (compose to (i $* to'))) [0..n-1] -- each iteration, multiply the added transform by the iteration counter
-evalIR' (Simple bdy)           p t o ti to = evalLB bdy p t o   ti to
-evalIR' (Before  tmp   bdy ir) p t o ti to = evalLB bdy p t tmp ti Id              >> evalIR' ir p tmp o Id              to
-evalIR' (After   tmp   ir bdy) p t o ti to = evalIR' ir p t tmp ti Id              >> evalLB bdy p tmp o Id              to
-evalIR' (Before' bh ch bdy ir) p t o ti to = evalLB bdy p t o   ti (compose to bh) >> evalIR' ir p o   o (compose to bh) (compose to ch)
-evalIR' (After'  bh ch ir bdy) p t o ti to = evalIR' ir p t o   ti (compose to bh) >> evalLB bdy p o   o (compose to bh) (compose to ch)
-evalIR' (Besides bh ch bdy ir) p t o ti to = evalLB bdy p t o   ti (compose to bh) >> evalIR' ir p t   o ti              (compose to ch)
+evalIR' Void                    _ _ _ _  _  = return ()
+evalIR' (Weaken trans ir)       p t o ti to = evalIR' ir p t o (compose ti trans) to
+evalIR' (For ir n ti' to')      p t o ti to = traverse_ (\i -> evalIR' ir p t o (compose ti (i $* ti')) (compose to (i $* to'))) [0..n-1] -- each iteration, multiply the added transform by the iteration counter
+evalIR' (Simple bdy)            p t o ti to = evalLB bdy p t o ti to
+evalIR' (Before ac bc b bdy ir) p t o ti to = case fuseEnvs ac bc (ValArr' ti t) b of
+                              ValArr' tc c -> evalLB bdy p t c ti (compose tc bc) >> evalIR' ir p c o tc              to
+evalIR' (After  ac bc b ir bdy) p t o ti to = case fuseEnvs ac bc (ValArr' ti t) b of
+                              ValArr' tc c -> evalIR' ir p t c ti (compose tc bc) >> evalLB bdy p c o tc              to
+evalIR' (Before' bh ch bdy ir)  p t o ti to = evalLB bdy p t o ti (compose to bh) >> evalIR' ir p o o (compose to bh) (compose to ch)
+evalIR' (After'  bh ch ir bdy)  p t o ti to = evalIR' ir p t o ti (compose to bh) >> evalLB bdy p o o (compose to bh) (compose to ch)
+evalIR' (Besides bh ch bdy ir)  p t o ti to = evalLB bdy p t o ti (compose to bh) >> evalIR' ir p t o ti              (compose to ch)
 
-
+-- assumes that a and b are disjoint, and together make up c
+fuseEnvs :: Transform a c -> Transform b c -> ValArr' a -> ValArr b -> ValArr' c
+fuseEnvs Id _ a _ = a
+fuseEnvs _ Id _ b = ValArr' Id b
+fuseEnvs (Skip f) g@(Fn 0 _) a (PushEnv bs b)
+  = case g of -- for some reason, you can't give as much type annotations in the top level patternmatch
+    ((Fn 0 g') :: Transform (x, Array sh e) (y, Array sh' e))
+      | Just Refl <- eqT @sh @sh' -> case fuseEnvs f g' a bs of
+        ValArr' tr valarr -> ValArr' (Fn 0 tr) (PushEnv valarr b)
+    _ -> error "asdfasdfsdfg"
+fuseEnvs (Fn 0 f) (Skip g) a b = undefined --TODO
+fuseEnvs _ _ _ _ = error "fuseEnvs"
 
 -- evaluate one iteration of a loopbody
 evalLB :: LoopBody pinputs tinputs outputs x y
