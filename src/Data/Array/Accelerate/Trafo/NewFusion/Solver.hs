@@ -363,7 +363,7 @@ getNodeIds _       ArrayVarsNil                        = []
 getNodeIds (n : _) (ArrayVarsArray (ArrayVar ZeroIdx)) = [n]
 getNodeIds (_ : ns) (ArrayVarsArray (ArrayVar (SuccIdx idx))) =
   getNodeIds ns $ ArrayVarsArray (ArrayVar idx)
-getNodeIds ns (ArrayVarsPair a1 a2) = (getNodeIds ns a1) ++ (getNodeIds ns a2)
+getNodeIds ns (ArrayVarsPair a1 a2) = getNodeIds ns a1 ++ getNodeIds ns a2
 getNodeIds [] _ = error "NewFusion/Solver.hs: empty environment"
 
 -- Variables of type 'Array sh e' should only consist of a single NodeId
@@ -400,8 +400,8 @@ data DirectedAcyclicGraph = DAG {
 
 data ILPVar = Fusion NodeId   NodeId -- 0 means fused, 1 means not fused (not in the same fusion group)
             | Pi              NodeId -- the number of the fusion group this node is in, used for acyclicity
-            | InputShape      NodeId -- -2 represents 'unknown' (backpermute output), -1 represents an even spread across all blocks, X>=0 means each threadblock holds every value along the innermost X dimensions (X=1 represents the current FoldDim approach, and X=0 means each threadblock holds only 1 value)
-            | OutputShape     NodeId
+            -- | InputShape      NodeId -- -2 represents 'unknown' (backpermute output), -1 represents an even spread across all blocks, X>=0 means each threadblock holds every value along the innermost X dimensions (X=1 represents the current FoldDim approach, and X=0 means each threadblock holds only 1 value)
+            -- | OutputShape     NodeId
             | InputDirection  NodeId -- 0 is ->, 1 is <-, 2 is 'unknown'
             | OutputDirection NodeId deriving (Eq, Ord, Show)
 
@@ -453,9 +453,10 @@ makeILP DAG {..} = execLPM $ do
 
   maxN   = (2 *) $ maximum $ map ((\(NodeId n) -> n) . fst) nodes'
 
-  -- the maximum number of innermost dimensions a threadblock may hold, for a fold or scan on multidimensional data
-  maxFoldScanDims :: Int
-  maxFoldScanDims = 5
+
+  -- -- the maximum number of innermost dimensions a threadblock may hold, for a fold or scan on multidimensional data (for shapes)
+  -- maxFoldScanDims :: Int
+  -- maxFoldScanDims = 5
 
   -- All the fusion variables for vertical fusion, (x,y) means that y consumes x
   makeVerticals :: (NodeId, NodeType) -> [(NodeId, NodeId)]
@@ -492,81 +493,81 @@ makeILP DAG {..} = execLPM $ do
 
   makeConstraint :: (NodeId, NodeType) -> LPM ILPVar Int ()
   makeConstraint (n, nodetype) = case nodetype of
-    UnfusableT _ -> do
+    UnfusableT _ -> --do
       varBds (OutputDirection n) 0 2
-      varGeq (OutputShape n) (-2)
-    GenerateT -> do
+      -- varGeq (OutputShape n) (-2)
+    GenerateT -> --do
       varBds (OutputDirection n) 0 2
-      varGeq (OutputShape n) (-2)
+      -- varGeq (OutputShape n) (-2)
     MapT _ -> do
       varBds (OutputDirection n) 0 1
-      varGeq (OutputShape n) (-2)
+      -- varGeq (OutputShape n) (-2)
       equalTo
         (linCombination [(-1, OutputDirection n), (1, InputDirection n)])
         0
-      equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
+      -- equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
     VarT _ -> do
       varBds (OutputDirection n) 0 1
-      varGeq (OutputShape n) (-2)
+      -- varGeq (OutputShape n) (-2)
       equalTo
         (linCombination [(-1, OutputDirection n), (1, InputDirection n)])
         0
-      equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
+      -- equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
     ZipWithT _ _ -> do
       varBds (OutputDirection n) 0 2
-      varGeq (OutputShape n) (-2)
+      -- varGeq (OutputShape n) (-2)
       equalTo
         (linCombination [(-1, OutputDirection n), (1, InputDirection n)])
         0
-      equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
+      -- equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
     FoldDimT _ -> do
       varBds (OutputDirection n) 0 2
-      varBds (OutputShape n)     0 maxFoldScanDims
+      -- varBds (OutputShape n)     0 maxFoldScanDims
       equalTo
         (linCombination [(-1, OutputDirection n), (1, InputDirection n)])
         0
-      equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 1
-    FoldFlatT _ -> do
+      -- equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 1
+    FoldFlatT _ -> --do
       varBds (InputDirection n) 0 2 -- the output of a FoldFlat is just one element, so no variables needed
-      varEq (InputShape n) (-1)
+      -- varEq (InputShape n) (-1)
     FoldSegDimT _ _ -> do
       varBds (OutputDirection n) 0 2
-      varBds (OutputShape n)     0 maxFoldScanDims
+      -- varBds (OutputShape n)     0 maxFoldScanDims
       equalTo
         (linCombination [(-1, OutputDirection n), (1, InputDirection n)])
         0
-      equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 1
-    FoldSegFlatT _ _ -> do
+      -- equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 1
+    FoldSegFlatT _ _ -> --do
       varBds (InputDirection n) 0 2 -- the output of a FoldFlat is just one element, so no variables needed
-      varEq (InputShape n) (-1)
+      -- varEq (InputShape n) (-1)
     ScanDimT _ b -> do
       varEq (OutputDirection n) (fromEnum b)
-      varBds (OutputShape n) 1 maxFoldScanDims
+      -- varBds (OutputShape n) 1 maxFoldScanDims
       equalTo
         (linCombination [(-1, OutputDirection n), (1, InputDirection n)])
         0
-      equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
+      -- equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
     ScanFlatT _ b -> do
       varEq (InputDirection n) (fromEnum b)
-      varEq (InputShape n)     (-1)
+      -- varEq (InputShape n)     (-1)
       equalTo
         (linCombination [(-1, OutputDirection n), (1, InputDirection n)])
         0
-      equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
-    PermuteT _ _ -> do -- TODO fix backpermute . permute by adding a -1 direction
+      -- equalTo (linCombination [(-1, OutputShape n), (1, InputShape n)]) 0
+    PermuteT _ _ -> -- TODO fix backpermute . permute by adding a -1 direction
       varBds (InputDirection n) 0 2 -- can't fuse the output of a permute, so no variable needed
-      varGeq (InputShape n) (-2)
+      -- varGeq (InputShape n) (-2)
     BackpermuteT _ -> do
       varBds (OutputDirection n) 0 2 -- the output can be any shape, but the input has to be every shape
-      varGeq (OutputShape n) (-2)
+      -- varGeq (OutputShape n) (-2)
       varEq (InputDirection n) 2
-      varEq (InputShape n)     (-2)
-    StencilT _ -> do
+      -- varEq (InputShape n)     (-2)
+    StencilT _ -> --do
       varBds (OutputDirection n) 0 2 -- for now, stencils don't fuse with their inputs so no input variables needed
-      varGeq (OutputShape n) (-2)
-    Stencil2T _ _ -> do
+      -- varGeq (OutputShape n) (-2)
+    Stencil2T _ _ -> --do
       varBds (OutputDirection n) 0 2 -- for now, stencils don't fuse with their inputs so no input variables needed
-      varGeq (OutputShape n) (-2)
+      -- varGeq (OutputShape n) (-2)
 
   -- generate the constraints belonging to a vertical fusion: if fused, the input and output have to match
   fusionShapeV, fusionShapeH :: ILPVar -> LPM ILPVar Int ()
@@ -581,16 +582,16 @@ makeILP DAG {..} = execLPM $ do
         [(1, OutputDirection x), (-1, InputDirection y), (-2, Fusion x y)]
       )
       0
-    leqTo
-      (linCombination
-        [(-1, OutputShape x), (1, InputShape y), (-maxFoldScanDims, Fusion x y)]
-      )
-      0
-    leqTo
-      (linCombination
-        [(1, OutputShape x), (-1, InputShape y), (-maxFoldScanDims, Fusion x y)]
-      )
-      0
+    -- leqTo
+    --   (linCombination
+    --     [(-1, OutputShape x), (1, InputShape y), (-maxFoldScanDims, Fusion x y)]
+    --   )
+    --   0
+    -- leqTo
+    --   (linCombination
+    --     [(1, OutputShape x), (-1, InputShape y), (-maxFoldScanDims, Fusion x y)]
+    --   )
+    --   0
   fusionShapeV _ = ilpError
 
   -- generate the constraints belonging to a horizontal fusion: if fused, the inputs have to match
@@ -605,16 +606,16 @@ makeILP DAG {..} = execLPM $ do
         [(1, InputDirection x), (-1, InputDirection y), (-2, Fusion x y)]
       )
       0
-    leqTo
-      (linCombination
-        [(-1, InputShape x), (1, InputShape y), (-maxFoldScanDims, Fusion x y)]
-      )
-      0
-    leqTo
-      (linCombination
-        [(1, InputShape x), (-1, InputShape y), (-maxFoldScanDims, Fusion x y)]
-      )
-      0
+    -- leqTo
+    --   (linCombination
+    --     [(-1, InputShape x), (1, InputShape y), (-maxFoldScanDims, Fusion x y)]
+    --   )
+    --   0
+    -- leqTo
+    --   (linCombination
+    --     [(1, InputShape x), (-1, InputShape y), (-maxFoldScanDims, Fusion x y)]
+    --   )
+    --   0
   fusionShapeH _ = ilpError
 
 

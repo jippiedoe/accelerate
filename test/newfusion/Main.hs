@@ -6,7 +6,7 @@ import qualified Data.Array.Accelerate.Interpreter as I
 main :: IO ()
 main = do
   print "starting test/newfusion! woo!"
-  print $ I.run testwhile
+  print $ I.run normalise2'
 
 
 testwhile :: A.Acc (A.Array A.DIM1 Int)

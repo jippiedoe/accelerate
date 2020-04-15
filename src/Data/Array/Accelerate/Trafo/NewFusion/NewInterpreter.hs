@@ -113,11 +113,14 @@ instance ShapeIsh Neg1 where
 
 -- 'from' is a "subset" of 'to'
 data Transform from to where
-  Id :: Typeable a => Transform a a
+  Id :: Typeable a => Transform a a -- making this be "Transform () ()" would make more sense, but this allows for nice shortcuts when hand-writing transforms.
   Fn :: (ShapeIsh sh, ShapeIsh sh', Typeable from, Typeable to)
+  -- usually, sh' == sh :. Int. But due to composition it can be nested deeper,
+  -- and we also say that Z "is equal to" Neg1 :. Int.
+  -- Furthermore, in 'weakening' transforms, (Fn 0) is used as identity
      => Int -- offset
      -> Transform from to
-     -> Transform (from, Array sh e) (to, Array sh' e) -- usually, sh' == sh :. Int. But due to composition it can be nested deeper, and we also say that Neg1 is a 'subset' of Z
+     -> Transform (from, Array sh e) (to, Array sh' e)
   Skip :: (Elt e, ShapeIsh sh, Typeable from, Typeable to)
        => Transform from to
        -> Transform from (to, Array sh e)
