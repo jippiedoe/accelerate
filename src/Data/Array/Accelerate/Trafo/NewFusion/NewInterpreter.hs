@@ -21,24 +21,7 @@
 {-# OPTIONS_HADDOCK prune #-}
 
 
-module Data.Array.Accelerate.Trafo.NewFusion.NewInterpreter
-  ( Smart.Acc
-  , Arrays
-  , AST.Afunction
-  , AST.AfunctionR
-  ,
-  -- * Interpret an array expression
-  --run, run1, runN,
-
-  -- Internal (hidden)
-  --   evalPrj
-  -- , evalPrim
-  -- , evalPrimConst
-  -- , evalUndef
-  -- , evalCoerce
-  --, testThis
-  )
-where
+module Data.Array.Accelerate.Trafo.NewFusion.NewInterpreter where
 
 -- standard libraries
 import           Control.Monad
@@ -77,8 +60,8 @@ import           Data.Array.Accelerate.Array.Sugar
 -- import           Data.Array.Accelerate.Product
 import           Data.Array.Accelerate.Type
 -- import qualified Data.Array.Accelerate.AST     as AST
-import qualified Data.Array.Accelerate.Smart   as Smart
-import qualified Data.Array.Accelerate.Trafo   as AST
+-- import qualified Data.Array.Accelerate.Smart   as Smart
+-- import qualified Data.Array.Accelerate.Trafo   as AST
 
 import Data.IORef
 import           Control.Monad.State.Strict
@@ -89,7 +72,7 @@ import Data.Type.Bool
 -- import Data.Array.Accelerate.Analysis.Match
 
 -- import Unsafe.Coerce
-import Data.Maybe
+-- import Data.Maybe
 
 
 
@@ -105,10 +88,11 @@ data ValArr env where
   PushEnv  :: (Shape sh, Elt e, Typeable env) => ValArr env -> Array sh e -> ValArr (env, Array sh e)
 deriving instance Typeable ValArr
 
---TODO refactor many other places to use ValArr' :)
+--TODO refactor many places to use ValArr' :)
 data ValArr' env where
   ValArr' :: (Typeable env, Typeable env')
     => Transform env env' -> ValArr env' -> ValArr' env
+
 
 data Neg1 = Neg1 deriving (Show, Typeable)
 instance ArrayElt Neg1 where
@@ -130,7 +114,7 @@ instance ShapeIsh Neg1 where
 -- 'from' is a "subset" of 'to'
 data Transform from to where
   Id :: Typeable a => Transform a a
-  Fn :: (ShapeIsh sh, Shape sh', Typeable from, Typeable to)
+  Fn :: (ShapeIsh sh, ShapeIsh sh', Typeable from, Typeable to)
      => Int -- offset
      -> Transform from to
      -> Transform (from, Array sh e) (to, Array sh' e) -- usually, sh' == sh :. Int. But due to composition it can be nested deeper, and we also say that Neg1 is a 'subset' of Z
@@ -141,10 +125,6 @@ data Transform from to where
 deriving instance Show (Transform a b)
 deriving instance Eq (Transform a b)
 
--- compareTransform :: Transform a b -> Transform c b -> Maybe (a :~: c)
--- compareTransform (Skip f) (Skip g) = compareTransform f g
--- compareTransform Id Id = Just Refl
--- compareTransform (Fn i f) (Fn j g) =
 
 compose :: (Typeable a, Typeable b, Typeable c) => Transform b c -> Transform a b -> Transform a c
 compose Id x = x
@@ -162,10 +142,6 @@ i $* (Skip x) = Skip (i $* x)
 
 --IR
 data IntermediateRep permanentIn tempIn out where
-  Void :: IntermediateRep pin () ()
-  -- Id   ::(Elt e, Shape sh)
-  --      => IntermediateRep a b
-  --      -> IntermediateRep (a, Array sh e) (b, Array sh e)
   -- Basic control flow
   For  :: (Typeable tin, Typeable out, Typeable tin', Typeable out')
        => IntermediateRep pin tin out
@@ -183,45 +159,40 @@ data IntermediateRep permanentIn tempIn out where
          => Transform a a'
          -> IntermediateRep p a  b
          -> IntermediateRep p a' b
-
-
-    -- TODO: Before and Before' need an adjustment:
-    --       The IR should have access to the input of the LB too.
-    --       This would put it in line with the newfusion.AST vertical/diagonal concepts,
-    --       and allow horizontally fusing these constructs.
-    --       perhaps even After and After' should incorporate this,
-    --       allowing the LB to have access to the input of the IR.
-
   -- Vertical fusion
-  Before  :: (Typeable a, Typeable b)
-          => Transform a c -- only for weakening,
-          -> Transform b c -- no index transforms!
-          -> ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR
-          -> LoopBody        pin a b x 'True
-          -> IntermediateRep pin c d
-          -> IntermediateRep pin a d
+  Before  :: (Typeable a, Typeable b, Typeable ab)
+          => Transform a ab -- only for weakening,
+          -> Transform b ab -- no index transforms!
+          -> ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR (and should always be Z)
+          -> LoopBody        pin a  b x 'True
+          -> IntermediateRep pin ab c
+          -> IntermediateRep pin a  c
   After   :: Typeable b
-          => Transform a c -- only for weakening,
-          -> Transform b c -- no index transforms!
-          -> ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR
-          -> IntermediateRep pin a b
-          -> LoopBody        pin c d 'True x
-          -> IntermediateRep pin a d
+          => Transform a ab -- only for weakening,
+          -> Transform b ab -- no index transforms!
+          -> ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR (and should always be Z)
+          -> IntermediateRep pin a  b
+          -> LoopBody        pin ab c 'True x
+          -> IntermediateRep pin a  c
 
 
   -- Diagonal fusion
   Before' :: (Typeable b, Typeable c)
-          => Transform b hor
-          -> Transform c hor
-          -> LoopBody        pin a b x 'True
-          -> IntermediateRep pin b c
-          -> IntermediateRep pin a hor
+          => Transform a ab  -- only for
+          -> Transform b ab  -- weakening,
+          -> Transform b hor -- no index
+          -> Transform c hor -- transforms!
+          -> LoopBody        pin a  b x 'True
+          -> IntermediateRep pin ab c
+          -> IntermediateRep pin a  hor
   After'  :: (Typeable b, Typeable c)
-          => Transform b hor
-          -> Transform c hor
-          -> IntermediateRep pin a b
-          -> LoopBody        pin b c 'True x
-          -> IntermediateRep pin a hor
+          => Transform a ab  -- only for
+          -> Transform b ab  -- weakening,
+          -> Transform b hor -- no index
+          -> Transform c hor -- transforms!
+          -> IntermediateRep pin a  b
+          -> LoopBody        pin ab c 'True x
+          -> IntermediateRep pin a  hor
 
   -- Horizontal fusion
   Besides :: (Typeable b, Typeable c)
@@ -241,11 +212,7 @@ data LoopBody permIn tempIn out fusein fuseout where
   Base :: LoopBody  pin () () 'True 'True
   Take :: LoopBody' pin (Array sh1 a) (Array sh2 b)
        -> LoopBody  pin c d fin fout
-       -> LoopBody  pin (c, Array sh1 a)  (d,               Array sh2 b) (fin && Canfuse sh1) (fout && Canfuse sh2)
-  -- Give :: LoopBody' pin (Array sh1 a) (Array sh2 b)
-  --      -> LoopBody  pin c d fin fout
-  --      -> LoopBody  pin (c, Array sh1 a) ((d, Array sh1 a), Array sh2 b) (fin && Canfuse sh1) (fout && Canfuse sh2)
-
+       -> LoopBody  pin (c, Array sh1 a)  (d, Array sh2 b) (fin && Canfuse sh1) (fout && Canfuse sh2)
 
 -- arrays of dimension 'negative one' can't be fused vertically at that level, they have to be 'expanded' by a for-loop to dimension 0 first.
 -- think of folds: fusing with their input happens one loop deeper than fusing with their output
@@ -274,136 +241,37 @@ data LoopBody' permIn tempIn out where
             -> LoopBody' pin (Array Neg1 a) (Array DIM0 b)
 
 
-  -- TODO to accomodate functions resulting from something like a 'unfold . fold', we need either this constructor (and a way to deal with it), or IntermediateRep needs to allow composition of two loops
+  -- To accomodate functions resulting from something like a 'unfold . fold', we need either this constructor (and a way to deal with it), or IntermediateRep needs to allow composition of two loops
   -- this generalisation might not be too common, but it SHOULD be allowed? Or is this an example of general composition inside of the outer loop, which is not the same as fusion across all dimensions?
   -- not even sure whether the ILP 'allows' this fusion
   -- note that 'fold . unfold' can already be expressed!
 
+  -- ManyToMany :: (...) -> LoopBody' pin (Array DIM1 a) (Array DIM1 b)
+
   -- there might be a way to allow IntermediateRep to contain two (or more?) loops inside of a loop while still statically avoiding non-fusion patterns?
   -- Or we just have to promise to avoid them when constructing the IR
-  -- but maybe having non-nested loops is by definition a non-fused pattern
-
-  -- ManyToMany :: (Elt a, Elt b)
-  --            => IORef s
-  --            -> Int -- in size
-  --            -> (pin -> a -> State s (Maybe b))
-  --            -> Int -- out size
-  --            -> LoopBody' pin (Array DIM1 a) (Array DIM1 b)
+  -- but maybe having non-nested loops is by definition a non-fused pattern..
 
 
 
 
-
-
--- represents the first part of normalise2', consisting of: xs, sum1, scn, and sum2.
--- the second part (TODO) would consist of the rest: ys1, ys2 and the zipwith
+-- Represents the first part of normalise2', consisting of: xs, sum1, scn, and sum2.
 testIR1 :: IO (IntermediateRep () () ((((), Array DIM1 Int), Array DIM0 Int), Array DIM0 Int))
-testIR1 = fuseDiagonal <$> xs <*> (fuseHorizontal' <$> sum1 <*> join (fuseVertical <$> scn <*> sum2))
-  where
-    xs :: IO (IntermediateRep () () ((), Array DIM1 Int))
-    xs = newIORef 0 >>= \ref -> return $
-      For (Simple $ Use (fromList (Z:.30) [4..] :: Array DIM1 Int) ref Base) 30 Id trans
-    sum1, sum2 :: IO (IntermediateRep () ((), Array DIM1 Int) ((), Array DIM0 Int))
-    sum1 = newIORef (0, 0) >>= \ref -> return $
-      For (Simple $ Take (ManyToOne ref 30 (const $ modify . (+)) get) Base) 30 trans trans'
-    sum2 = sum1
-    scn :: IO (IntermediateRep () ((), Array DIM1 Int) ((), Array DIM1 Int))
-    scn = newIORef 0 >>= \ref -> return $
-      For (Simple $ Take (OneToOne ref (const $ \a -> modify (+a) >> get)) Base) 30 trans trans
-    trans :: Transform ((), Array DIM0 Int) ((), Array DIM1 Int)
-    trans = Fn 1 Id
-    trans' :: Transform ((), Array Neg1 Int) ((), Array DIM0 Int)
-    trans' = Fn 0 Id
+testIR1 = do
+  xs   <- newIORef 0      >>= \ref -> return $
+    Use (fromList (Z:.30) [4..] :: Array DIM1 Int) ref Base
+  sum1 <- newIORef (0, 0) >>= \ref -> return $
+    Take (ManyToOne ref 30 (const $ modify . (+)) get) Base
+  sum2 <- newIORef (0, 0) >>= \ref -> return $ Weaken (Fn 0 (Skip Id) :: Transform ((), Array DIM0 Int) (((), Array DIM0 Int), Array DIM0 Int)) $ Simple $
+    Take (ManyToOne ref 30 (const $ modify . (+)) get) Base
+  scn  <- newIORef 0      >>= \ref -> return $
+    Take (OneToOne ref (const $ \a -> modify (+a) >> get)) Base
+  temp <- PushEnv EmptyEnv . Array (fromElt Z) <$> newArrayData 1
+  let sum2scn = Before (Skip Id) (Fn 0 (Skip Id)) temp scn sum2
+  let sum1sum2scn = Besides (Skip Id :: Transform ((), Array Neg1 Int) (((), Array Neg1 Int), Array Neg1 Int)) (Fn 0 (Skip Id)) sum1 sum2scn
+  let inner = Before' (Skip Id) Id (Skip (Skip Id)) (Fn 0 (Fn 0 (Skip Id))) xs sum1sum2scn :: IntermediateRep () () ((((), Array DIM0 Int), Array Neg1 Int), Array Neg1 Int)
+  return $ For inner 30 Id (Fn 0 (Fn 0 (Fn 1 Id)))
 
-fuseHorizontal' :: (Shape b, Shape c, Elt b', Elt c')
-                => IntermediateRep p a ((), Array b b')
-                -> IntermediateRep p a ((), Array c c')
-                -> IntermediateRep p a (((), Array b b'), Array c c')
-fuseHorizontal' b c = fuseHorizontal b c (Skip Id) (Fn 0 (Skip Id))
-
-
-fuseHorizontal :: forall p a b c d. (Typeable b, Typeable c, Typeable d)
-                => IntermediateRep p a b -> IntermediateRep p a c -- The IR's to fuse
-                -> Transform b d -> Transform c d                 -- Evidence that b,c ⊆ d
-                -> IntermediateRep p a d
-fuseHorizontal (For (bIR :: IntermediateRep p a' b')  bn ib ob)
-               (For (cIR :: IntermediateRep p a'' c') cn ic oc)
-               bd cd | bn == cn                  -- Ensure that the
-                     , Just Refl <- eqT @a' @a'' --  'For loops'
-                     , ib == ic                  --  are fusable
-                = case mkSmth bd cd ob oc of
-                  Exists' (Something dd bd' cd') ->
-                    For (fuseHorizontal bIR cIR bd' cd') bn ib dd
-                | otherwise = error "fuseHorizontal, FOR loops don't match"
-fuseHorizontal (Simple lb) ir bd cd = Besides bd cd lb ir
-fuseHorizontal ir (Simple lb) bd cd = Besides cd bd lb ir
-fuseHorizontal (Before ac bc b lb ir) y bd cd = Before ac bc b lb (fuseHorizontal ir (Weaken ac y) bd cd)
-fuseHorizontal x (Before ac bc b lb ir) bd cd = Before ac bc b lb (fuseHorizontal (Weaken ac x) ir bd cd)
-
-fuseHorizontal Void x _ Id = x
-fuseHorizontal Void _ _ _ = error "unreachable? I guess so"
-fuseHorizontal x Void Id _ = x
-fuseHorizontal _ Void _ _ = error "unreachable? I guess so"
-
-fuseHorizontal _ _ _ _ = undefined
-
-data Something b c d b' c' d' = Something (Transform d' d) (Transform b' d') (Transform c' d')
-
-mkSmth :: forall b c d b' c'. (Typeable b, Typeable c, Typeable d, Typeable b', Typeable c')
-     => Transform b d -> Transform c d -> Transform b' b -> Transform c' c -> Exists' (Something b c d b' c')
-mkSmth Id Id Id Id = Exists' $ Something Id Id Id
-mkSmth (Skip f) (Skip g) h i = case mkSmth f g h i of Exists' (Something x y z) -> Exists' $ Something (Skip x) y z
-mkSmth (Skip (f :: Transform b smth)) (Fn a g) h (Fn b i) = case undefined of --TODO replace these undefined's
-  ExistsArr (Proxy :: Proxy (Array sh e)) -> case undefined of
-    (Refl :: (d :~: (smth, Array sh e))) -> case mkSmth f g h i of
-      Exists' (Something (x :: Transform smalld' smalld) y z) -> Exists' $ Something (Fn b x :: Transform (smalld', Array sh e) d) (Skip y) (Fn a z)
-mkSmth _ _ _ _ = undefined --TODO this should be possible, it's just a pain to write
-
--- TODO generalise type
-fuseDiagonal :: IntermediateRep p a b -> IntermediateRep p b (((),c),d) -> IntermediateRep p a ((b, c), d)
-fuseDiagonal = undefined
-
-fuseVertical :: forall p a b c. IntermediateRep p a b -> IntermediateRep p b c -> IO (IntermediateRep p a c)
-fuseVertical Void a = return a
-fuseVertical (For (ir :: IntermediateRep p a' b') i ti _)
-             (For (ir' :: IntermediateRep p b'' c') i' _ to')
-              | i == i'
-              , Just Refl <- eqT @b' @b''
-                = (\x -> For x i ti to') <$> fuseVertical ir ir'
-              | otherwise = error $ "vertical fusion of 'For " ++ show i ++ "' and 'For " ++ show i' ++ "'"
---TODO weaken 'ir'
--- fuseVertical (Simple (lb :: LoopBody p a b x y)) ir
---   | Just Refl <- eqT @'True @y = (\t -> Before t lb ir) <$> makeTemp
---   | otherwise = error "verticalFusion"
--- fuseVertical ir (Simple (lb :: LoopBody p b c x y))
---   | Just Refl <- eqT @'True @x = (\t -> After  t ir lb) <$> makeTemp
---   | otherwise = error "verticalFusion"
-fuseVertical _ _ = undefined -- TODO
-
-makeTemp :: forall a. Typeable a => IO (ValArr a)
-makeTemp = do
-  exiEnv <- makeTemp' (typeRep (Proxy :: Proxy a))
-  case exiEnv of -- forced to match on EmptyEnv and PushEnv to convince the typechecker of Typeable a; but the cases are identical
-    Exists EmptyEnv -> return . fromJust $ cast EmptyEnv -- fromJust is needed because makeTemp' gives no evidence that the ValArr is of the correct type, but we know it is.
-    Exists (PushEnv env arr) -> return . fromJust . cast $ PushEnv env arr
-
-makeTemp' :: TypeRep -> IO (Exists ValArr)
-makeTemp' typrep = case typeRepArgs typrep of
-  [] -> return $ Exists EmptyEnv
-  [envrep, arrayTypeRep] -> do
-    existsenv <- makeTemp' envrep
-    case existsenv of -- forced to match on EmptyEnv and PushEnv to convince the typechecker of Typeable a; but the cases are identical
-      Exists env@EmptyEnv -> case typeRepArgs arrayTypeRep of
-        [shaperep, _] -> if shaperep == typeRep (Proxy :: Proxy Z) --TODO check for other elt types
-          then Exists . PushEnv env <$> ((Array (fromElt Z) <$> newArrayData 1) :: IO (Array Z Int))
-          else error $ "Not a Z:" ++ show shaperep
-        _ -> error "I'm a bad person"
-      Exists env@(PushEnv _ _) -> case typeRepArgs arrayTypeRep of
-        [shaperep, _] -> if shaperep == typeRep (Proxy :: Proxy Z) --TODO check for other elt types
-          then Exists . PushEnv env <$> ((Array (fromElt Z) <$> newArrayData 1) :: IO (Array Z Int))
-          else error $ "Not a Z:" ++ show shaperep
-        _ -> error "I'm a bad person"
-  _ -> error "I'm a bad person"
 
 
 
@@ -422,30 +290,45 @@ evalIR' :: (Typeable pInputs, Typeable tInputs, Typeable outputs, Typeable tInpu
         -> Transform tInputs tInputs'                -- Transform   inputs, ti
         -> Transform outputs outputs'                -- Transform   output, to
         -> IO ()
-evalIR' Void                    _ _ _ _  _  = return ()
-evalIR' (Weaken trans ir)       p t o ti to = evalIR' ir p t o (compose ti trans) to
-evalIR' (For ir n ti' to')      p t o ti to = traverse_ (\i -> evalIR' ir p t o (compose ti (i $* ti')) (compose to (i $* to'))) [0..n-1] -- each iteration, multiply the added transform by the iteration counter
-evalIR' (Simple bdy)            p t o ti to = evalLB bdy p t o ti to
-evalIR' (Before ac bc b bdy ir) p t o ti to = case fuseEnvs ac bc (ValArr' ti t) b of
-                              ValArr' tc c -> evalLB bdy p t c ti (compose tc bc) >> evalIR' ir p c o tc              to
-evalIR' (After  ac bc b ir bdy) p t o ti to = case fuseEnvs ac bc (ValArr' ti t) b of
-                              ValArr' tc c -> evalIR' ir p t c ti (compose tc bc) >> evalLB bdy p c o tc              to
-evalIR' (Before' bh ch bdy ir)  p t o ti to = evalLB bdy p t o ti (compose to bh) >> evalIR' ir p o o (compose to bh) (compose to ch)
-evalIR' (After'  bh ch ir bdy)  p t o ti to = evalIR' ir p t o ti (compose to bh) >> evalLB bdy p o o (compose to bh) (compose to ch)
-evalIR' (Besides bh ch bdy ir)  p t o ti to = evalLB bdy p t o ti (compose to bh) >> evalIR' ir p t o ti              (compose to ch)
+evalIR' (Weaken trans ir)            p t o ti to = evalIR' ir p t o (compose ti trans) to
+evalIR' (For ir n ti' to')           p t o ti to = (`traverse_` [0..n-1]) $ \i
+                                                -> evalIR' ir p t o (compose ti (i $* ti')) (compose to (i $* to'))
+evalIR' (Simple bdy)                 p t o ti to = evalLB bdy p t o ti to
+evalIR' (Before ta tb b bdy ir)      p t o ti to = case fuseEnvs ta tb (ValArr' ti t) (ValArr' Id b) of
+                                   ValArr' tc c -> evalLB bdy p t c ti (compose tc tb)
+                                                >> evalIR' ir p c o tc to
+evalIR' (After  ta tb b ir bdy)      p t o ti to = case fuseEnvs ta tb (ValArr' ti t) (ValArr' Id b) of
+                                   ValArr' tc c -> evalIR' ir p t c ti (compose tc tb)
+                                                >> evalLB bdy p c o tc to
+evalIR' (Before' ta tb bh ch bdy ir) p t o ti to = case fuseEnvs ta tb (ValArr' ti t) (ValArr' (compose to bh) o) of
+                                   ValArr' tc c -> evalLB bdy p t o ti (compose to bh)
+                                                >> evalIR' ir p c o tc (compose to ch)
+evalIR' (After'  ta tb bh ch ir bdy) p t o ti to = case fuseEnvs ta tb (ValArr' ti t) (ValArr' (compose to bh) o) of
+                                   ValArr' tc c -> evalIR' ir p t o ti (compose to bh)
+                                                >> evalLB bdy p c o tc (compose to ch)
+evalIR' (Besides bh ch bdy ir)       p t o ti to = evalLB bdy p t o ti (compose to bh)
+                                                >> evalIR' ir p t o ti (compose to ch)
 
 -- assumes that a and b are disjoint, and together make up c
-fuseEnvs :: Transform a c -> Transform b c -> ValArr' a -> ValArr b -> ValArr' c
+-- this function is honestly not pretty, but it doesn't quite translate nicely
+-- into composition etc..
+-- this function is a lot stricter than it needs to be, to assert some probable invariants: TODO check them to make sure
+fuseEnvs :: Transform a c -> Transform b c -> ValArr' a -> ValArr' b -> ValArr' c
 fuseEnvs Id _ a _ = a
-fuseEnvs _ Id _ b = ValArr' Id b
-fuseEnvs (Skip f) g@(Fn 0 _) a (PushEnv bs b)
-  = case g of -- for some reason, you can't give as much type annotations in the top level patternmatch
+fuseEnvs _ Id _ b = b
+fuseEnvs (Skip f) g@Fn{} a (ValArr' h (PushEnv bs' b'))
+  = case g of -- for some reason, you can't give as detailed type annotations in the top level patternmatch
     ((Fn 0 g') :: Transform (x, Array sh e) (y, Array sh' e))
-      | Just Refl <- eqT @sh @sh' -> case fuseEnvs f g' a bs of
-        ValArr' tr valarr -> ValArr' (Fn 0 tr) (PushEnv valarr b)
-    _ -> error "asdfasdfsdfg"
-fuseEnvs (Fn 0 f) (Skip g) a b = undefined --TODO
+      | Just Refl <- eqT @sh @sh' -> case h of
+        Fn i tr -> case fuseEnvs f g' a (ValArr' tr bs') of
+          ValArr' t x -> ValArr' (Fn i t) (PushEnv x b')
+        Id      -> case fuseEnvs f g' a (ValArr' Id bs') of
+          ValArr' t x -> ValArr' (Fn 0 t) (PushEnv x b')
+        Skip tr -> fuseEnvs (Skip f) g a (ValArr' tr bs')
+    _ -> error "fuseEnvs, bc changes index"
+fuseEnvs f@Fn{} g@Skip{} a b = fuseEnvs g f b a -- call the case above
 fuseEnvs _ _ _ _ = error "fuseEnvs"
+
 
 -- evaluate one iteration of a loopbody
 evalLB :: LoopBody pinputs tinputs outputs x y
@@ -509,3 +392,125 @@ evalLB' (OneToMany sref n f) inoff outoff p (Array _ a) (Array _ b) = do
   writeIORef sref (s, tail bs, i')
   unsafeWriteArrayData b outoff . fromElt . head $ bs
 
+
+
+
+
+-- The part below is an attempt at fusing arbitrary (fuseable) IRs, but it still needs some work
+
+-- -- -- represents the first part of normalise2', consisting of: xs, sum1, scn, and sum2.
+-- -- -- the second part (TODO) would consist of the rest: ys1, ys2 and the zipwith
+-- -- testIR1' :: IO (IntermediateRep () () ((((), Array DIM1 Int), Array DIM0 Int), Array DIM0 Int))
+-- -- testIR1' = fuseDiagonal <$> xs <*> (fuseHorizontal' <$> sum1 <*> join (fuseVertical <$> scn <*> sum2))
+-- --   where
+-- --     xs :: IO (IntermediateRep () () ((), Array DIM1 Int))
+-- --     xs = newIORef 0 >>= \ref -> return $
+-- --       For (Simple $ Use (fromList (Z:.30) [4..] :: Array DIM1 Int) ref Base) 30 Id trans
+-- --     sum1, sum2 :: IO (IntermediateRep () ((), Array DIM1 Int) ((), Array DIM0 Int))
+-- --     sum1 = newIORef (0, 0) >>= \ref -> return $
+-- --       For (Simple $ Take (ManyToOne ref 30 (const $ modify . (+)) get) Base) 30 trans trans'
+-- --     sum2 = sum1
+-- --     scn :: IO (IntermediateRep () ((), Array DIM1 Int) ((), Array DIM1 Int))
+-- --     scn = newIORef 0 >>= \ref -> return $
+-- --       For (Simple $ Take (OneToOne ref (const $ \a -> modify (+a) >> get)) Base) 30 trans trans
+-- --     trans :: Transform ((), Array DIM0 Int) ((), Array DIM1 Int)
+-- --     trans = Fn 1 Id
+-- --     trans' :: Transform ((), Array Neg1 Int) ((), Array DIM0 Int)
+-- --     trans' = Fn 0 Id
+
+-- -- fuseHorizontal' :: (Typeable a, Shape b, Shape c, Elt b', Elt c')
+-- --                 => IntermediateRep p a ((), Array b b')
+-- --                 -> IntermediateRep p a ((), Array c c')
+-- --                 -> IntermediateRep p a (((), Array b b'), Array c c')
+-- -- fuseHorizontal' b c = fuseHorizontal b c (Skip Id) (Fn 0 (Skip Id))
+
+
+-- -- fuseHorizontal :: forall p a b c d. (Typeable a, Typeable b, Typeable c, Typeable d)
+-- --                 => IntermediateRep p a b -> IntermediateRep p a c -- The IR's to fuse
+-- --                 -- TODO: evidence that a', a'' ⊆ a
+-- --                 -> Transform b d -> Transform c d                 -- Evidence that b,c ⊆ d
+-- --                 -> IntermediateRep p a d
+-- -- fuseHorizontal (For (bIR :: IntermediateRep p a' b')  bn ib ob)
+-- --                (For (cIR :: IntermediateRep p a'' c') cn ic oc)
+-- --                bd cd | bn == cn                  -- Ensure that the
+-- --                      , Just Refl <- eqT @a' @a'' --  'For loops'
+-- --                      , ib == ic                  --  are fusable
+-- --                 = case mkSmth bd cd ob oc of
+-- --                   Exists' (Something dd bd' cd') ->
+-- --                     For (fuseHorizontal bIR cIR bd' cd') bn ib dd
+-- --                 | otherwise = error "fuseHorizontal, FOR loops don't match"
+-- -- fuseHorizontal (Weaken t ir) x bd cd = case ir of
+-- --   Void -> undefined -- TODO just remove Void already
+-- --   For ir' i ti to -> undefined -- TODO move the weaken into "ir'" and padd "ti" accordingly (with care not to break the invariants checked above, where FOR and FOR are fused)
+-- --   Simple lb -> undefined -- TODO add an input transform to 'Besides'
+-- --   Weaken t' ir' -> fuseHorizontal (Weaken (compose t t') ir') x bd cd
+-- --   Before aab bab b lb ir' -> _
+-- -- fuseHorizontal (Simple lb) ir bd cd = Besides bd cd lb ir
+-- -- fuseHorizontal ir (Simple lb) bd cd = Besides cd bd lb ir
+-- -- fuseHorizontal (Before ac bc b lb ir) y bd cd = Before ac bc b lb (fuseHorizontal ir (Weaken ac y) bd cd)
+-- -- fuseHorizontal x (Before ac bc b lb ir) bd cd = Before ac bc b lb (fuseHorizontal (Weaken ac x) ir bd cd)
+
+-- -- fuseHorizontal Void x _ Id = x
+-- -- fuseHorizontal Void _ _ _ = error "unreachable? I guess so"
+-- -- fuseHorizontal x Void Id _ = x
+-- -- fuseHorizontal _ Void _ _ = error "unreachable? I guess so"
+
+-- -- fuseHorizontal _ _ _ _ = undefined
+
+-- -- data Something b c d b' c' d' = Something (Transform d' d) (Transform b' d') (Transform c' d')
+
+-- -- mkSmth :: forall b c d b' c'. (Typeable b, Typeable c, Typeable d, Typeable b', Typeable c')
+-- --      => Transform b d -> Transform c d -> Transform b' b -> Transform c' c -> Exists' (Something b c d b' c')
+-- -- mkSmth Id Id Id Id = Exists' $ Something Id Id Id
+-- -- mkSmth (Skip f) (Skip g) h i = case mkSmth f g h i of Exists' (Something x y z) -> Exists' $ Something (Skip x) y z
+-- -- mkSmth (Skip (f :: Transform b smth)) (Fn a g) h (Fn b i) = case undefined of --TODO replace these undefined's
+-- --   ExistsArr (Proxy :: Proxy (Array sh e)) -> case undefined of
+-- --     (Refl :: (d :~: (smth, Array sh e))) -> case mkSmth f g h i of
+-- --       Exists' (Something (x :: Transform smalld' smalld) y z) -> Exists' $ Something (Fn b x :: Transform (smalld', Array sh e) d) (Skip y) (Fn a z)
+-- -- mkSmth _ _ _ _ = undefined --TODO this should be possible, it's just a pain to write
+
+-- -- -- TODO
+-- -- fuseDiagonal :: IntermediateRep p a b -> IntermediateRep p b (((),c),d) -> IntermediateRep p a ((b, c), d)
+-- -- fuseDiagonal = undefined
+
+-- -- fuseVertical :: forall p a b c. IntermediateRep p a b -> IntermediateRep p b c -> IO (IntermediateRep p a c)
+-- -- fuseVertical Void a = return a
+-- -- fuseVertical (For (ir :: IntermediateRep p a' b') i ti _)
+-- --              (For (ir' :: IntermediateRep p b'' c') i' _ to')
+-- --               | i == i'
+-- --               , Just Refl <- eqT @b' @b''
+-- --                 = (\x -> For x i ti to') <$> fuseVertical ir ir'
+-- --               | otherwise = error $ "vertical fusion of 'For " ++ show i ++ "' and 'For " ++ show i' ++ "'"
+-- -- --TODO weaken 'ir'
+-- -- -- fuseVertical (Simple (lb :: LoopBody p a b x y)) ir
+-- -- --   | Just Refl <- eqT @'True @y = (\t -> Before t lb ir) <$> makeTemp
+-- -- --   | otherwise = error "verticalFusion"
+-- -- -- fuseVertical ir (Simple (lb :: LoopBody p b c x y))
+-- -- --   | Just Refl <- eqT @'True @x = (\t -> After  t ir lb) <$> makeTemp
+-- -- --   | otherwise = error "verticalFusion"
+-- -- fuseVertical _ _ = undefined -- TODO
+
+-- -- makeTemp :: forall a. Typeable a => IO (ValArr a)
+-- -- makeTemp = do
+-- --   exiEnv <- makeTemp' (typeRep (Proxy :: Proxy a))
+-- --   case exiEnv of -- forced to match on EmptyEnv and PushEnv to convince the typechecker of Typeable a; but the cases are identical
+-- --     Exists EmptyEnv -> return . fromJust $ cast EmptyEnv -- fromJust is needed because makeTemp' gives no evidence that the ValArr is of the correct type, but we know it is.
+-- --     Exists (PushEnv env arr) -> return . fromJust . cast $ PushEnv env arr
+
+-- -- makeTemp' :: TypeRep -> IO (Exists ValArr)
+-- -- makeTemp' typrep = case typeRepArgs typrep of
+-- --   [] -> return $ Exists EmptyEnv
+-- --   [envrep, arrayTypeRep] -> do
+-- --     existsenv <- makeTemp' envrep
+-- --     case existsenv of -- forced to match on EmptyEnv and PushEnv to convince the typechecker of Typeable a; but the cases are identical
+-- --       Exists env@EmptyEnv -> case typeRepArgs arrayTypeRep of
+-- --         [shaperep, _] -> if shaperep == typeRep (Proxy :: Proxy Z) --TODO check for other elt types
+-- --           then Exists . PushEnv env <$> ((Array (fromElt Z) <$> newArrayData 1) :: IO (Array Z Int))
+-- --           else error $ "Not a Z:" ++ show shaperep
+-- --         _ -> error "I'm a bad person"
+-- --       Exists env@(PushEnv _ _) -> case typeRepArgs arrayTypeRep of
+-- --         [shaperep, _] -> if shaperep == typeRep (Proxy :: Proxy Z) --TODO check for other elt types
+-- --           then Exists . PushEnv env <$> ((Array (fromElt Z) <$> newArrayData 1) :: IO (Array Z Int))
+-- --           else error $ "Not a Z:" ++ show shaperep
+-- --         _ -> error "I'm a bad person"
+-- --   _ -> error "I'm a bad person"

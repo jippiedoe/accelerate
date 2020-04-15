@@ -39,3 +39,16 @@ normalise2' = A.zipWith (*) ys1 ys2 where             -- 10 [1]
   sum2 = A.fold (+) 0 scn                             -- 7  [0]
   ys1 = A.map (`A.div` (sum1 A.! A.constant A.Z)) xs  -- 4  [1]
   ys2 = A.map (`A.div` (sum2 A.! A.constant A.Z)) xs  -- 8  [1]
+
+
+{-
+xs == For (30) {OneToOne}
+
+sum1 == For (30) {ManyToOne}
+
+sum2 | scn == For (30) {Before {OneToOne} {ManyToOne}}
+
+sum1 - (sum2 | scn) == For (30) {Besides {ManyToOne} {Before {OneToOne} {ManyToOne}}}
+
+xs \ (sum1 - (sum2 | scn)) == For (30) {Before' {xs} {Besides {sum1} {Before {scn} {sum2}}}}
+-}
