@@ -126,7 +126,7 @@ data Transform from to where
        -> Transform from (to, Array sh e)
 
 deriving instance Show (Transform a b)
-deriving instance Eq (Transform a b)
+deriving instance Eq   (Transform a b)
 
 
 compose :: (Typeable a, Typeable b, Typeable c) => Transform b c -> Transform a b -> Transform a c
@@ -275,7 +275,7 @@ testIR1 = do
   let inner = Before' (Skip Id) Id (Skip (Skip Id)) (Fn 0 (Fn 0 (Skip Id))) xs sum1sum2scn :: IntermediateRep () () ((((), Array DIM0 Int), Array Neg1 Int), Array Neg1 Int)
   return $ For inner 30 Id (Fn 0 (Fn 0 (Fn 1 Id)))
 
-
+-- fuseDiagonal <$> xs <*> (fuseHorizontal' <$> sum1 <*> join (fuseVertical <$> scn <*> sum2))
 
 
 
@@ -421,11 +421,11 @@ evalLB' (OneToMany sref n f) inoff outoff p (Array _ a) (Array _ b) = do
 -- --     trans' :: Transform ((), Array Neg1 Int) ((), Array DIM0 Int)
 -- --     trans' = Fn 0 Id
 
--- -- fuseHorizontal' :: (Typeable a, Shape b, Shape c, Elt b', Elt c')
--- --                 => IntermediateRep p a ((), Array b b')
--- --                 -> IntermediateRep p a ((), Array c c')
--- --                 -> IntermediateRep p a (((), Array b b'), Array c c')
--- -- fuseHorizontal' b c = fuseHorizontal b c (Skip Id) (Fn 0 (Skip Id))
+fuseHorizontal' :: (Typeable a, Shape b, Shape c, Elt b', Elt c')
+                => IntermediateRep p a ((), Array b b')
+                -> IntermediateRep p a ((), Array c c')
+                -> IntermediateRep p a (((), Array b b'), Array c c')
+fuseHorizontal' b c = fuseHorizontal b c (Skip Id) (Fn 0 (Skip Id))
 
 
 -- -- fuseHorizontal :: forall p a b c d. (Typeable a, Typeable b, Typeable c, Typeable d)
