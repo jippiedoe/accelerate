@@ -55,14 +55,14 @@ import           Data.Array.Accelerate.AST
 import           Data.Array.Accelerate.Array.Data -- because we're doing a lot of mutating, and I'm paranoid, I try to avoid 'unsafeIndexArrayData' in favour of 'unsafeReadArrayData'
 -- import qualified          Data.Array.Accelerate.Array.Representation as Repr
 --                                                 ( SliceIndex(..) )
-import           Data.Array.Accelerate.Array.Sugar
+-- import           Data.Array.Accelerate.Array.Sugar hiding (Array, fromList)
 -- import           Data.Array.Accelerate.Error
 -- import           Data.Array.Accelerate.Product
 import           Data.Array.Accelerate.Type
 -- import qualified Data.Array.Accelerate.AST     as AST
 -- import qualified Data.Array.Accelerate.Smart   as Smart
 -- import qualified Data.Array.Accelerate.Trafo   as AST
-
+import Data.Array.Accelerate.Array.Representation
 import Data.IORef
 import           Control.Monad.State.Strict
 import Data.Foldable
@@ -95,13 +95,13 @@ data ValArr' env where
 
 
 data Neg1 = Neg1 deriving (Show, Typeable)
-instance ArrayElt Neg1 where
-  type ArrayPtrs Neg1 = Neg1
-instance Elt Neg1 where
-  type EltRepr Neg1 = ()
-  eltType       = TypeRunit
-  fromElt Neg1   = ()
-  toElt ()      = Neg1
+-- instance ArrayElt Neg1 where
+--   type ArrayPtrs Neg1 = Neg1
+-- instance Elt Neg1 where
+--   type EltRepr Neg1 = ()
+--   eltType       = TypeRunit
+--   fromElt Neg1   = ()
+--   toElt ()      = Neg1
 class Elt a => ShapeIsh a where
   totalSize :: a -> Int
 instance (Elt a, Shape a) => ShapeIsh a where
@@ -262,14 +262,14 @@ data LoopBody' permIn tempIn out where
 testIR1 :: IO (IntermediateRep () () ((((), Array DIM1 Int), Array DIM0 Int), Array DIM0 Int))
 testIR1 = do
   xs   <- newIORef 0      >>= \ref -> return $
-    Use (fromList (Z:.30) [4..] :: Array DIM1 Int) ref Base
+    Use (fromList (arrayR @DIM1 @Int) (Z, 30) [4..] :: Array DIM1 Int) ref Base
   sum1 <- newIORef (0, 0) >>= \ref -> return $
     Take (ManyToOne ref 30 (const $ modify . (+)) get) Base
   sum2 <- newIORef (0, 0) >>= \ref -> return $ Weaken (Fn 0 (Skip Id) :: Transform ((), Array DIM0 Int) (((), Array DIM0 Int), Array DIM0 Int)) $ Simple $
     Take (ManyToOne ref 30 (const $ modify . (+)) get) Base
   scn  <- newIORef 0      >>= \ref -> return $
     Take (OneToOne ref (const $ \a -> modify (+a) >> get)) Base
-  temp <- PushEnv EmptyEnv . Array (fromElt Z) <$> newArrayData 1
+  temp <- PushEnv EmptyEnv . (Array :: _) _ <$> (newArrayData (TupRsingle . SingleScalarType . NumSingleType . IntegralNumType $ TypeInt) 1 :: IO (ArrayData Int))
   let sum2scn = Before (Skip Id) (Fn 0 (Skip Id)) temp scn sum2
   let sum1sum2scn = Besides (Skip Id :: Transform ((), Array Neg1 Int) (((), Array Neg1 Int), Array Neg1 Int)) (Fn 0 (Skip Id)) sum1 sum2scn
   let inner = Before' (Skip Id) Id (Skip (Skip Id)) (Fn 0 (Fn 0 (Skip Id))) xs sum1sum2scn :: IntermediateRep () () ((((), Array DIM0 Int), Array Neg1 Int), Array Neg1 Int)

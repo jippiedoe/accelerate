@@ -5,7 +5,7 @@
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE TypeFamilies      #-}
 {-# LANGUAGE TypeOperators     #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# OPTIONS_GHC -fno-warn-orphans -freduction-depth=100 #-}
 -- |
 -- Module      : Data.Array.Accelerate.Classes.Eq
 -- Copyright   : [2016..2019] The Accelerate Team
@@ -39,10 +39,10 @@ import qualified Prelude                                            as P
 
 
 pattern True_ :: Exp Bool
-pattern True_ = Exp (Const True)
+pattern True_ = Exp (SmartExp (Const (SingleScalarType (NonNumSingleType TypeBool)) True))
 
 pattern False_ :: Exp Bool
-pattern False_ = Exp (Const False)
+pattern False_ = Exp (SmartExp (Const (SingleScalarType (NonNumSingleType TypeBool)) False))
 
 
 infix 4 ==
@@ -105,12 +105,11 @@ instance P.Eq (Exp a) where
 preludeError :: String -> String -> a
 preludeError x y = error (printf "Prelude.%s applied to EDSL types: use Data.Array.Accelerate.%s instead" x y)
 
-lift2 :: (Elt a, Elt b, IsScalar b, b ~ EltRepr a)
-      => (Exp b -> Exp b -> Exp Bool)
-      -> Exp a
-      -> Exp a
-      -> Exp Bool
-lift2 f x y = f (mkUnsafeCoerce x) (mkUnsafeCoerce y)
+-- To support 16-tuples, we must set the maximum recursion depth of the type
+-- checker higher. The default is 51, which appears to be a problem for
+-- 16-tuples (15-tuples do work). Hence we set a compiler flag at the top
+-- of this file: -freduction-depth=100
+--
 
 $(runQ $ do
     let
@@ -165,13 +164,6 @@ $(runQ $ do
                 (/=) = mkNEq
             |]
 
-        mkCPrim :: Name -> Q [Dec]
-        mkCPrim t =
-          [d| instance Eq $(conT t) where
-                (==) = lift2 mkEq
-                (/=) = lift2 mkNEq
-            |]
-
         mkTup :: Int -> Q [Dec]
         mkTup n =
           let
@@ -189,7 +181,7 @@ $(runQ $ do
     is <- mapM mkPrim integralTypes
     fs <- mapM mkPrim floatingTypes
     ns <- mapM mkPrim nonNumTypes
-    cs <- mapM mkCPrim cTypes
+    cs <- mapM mkPrim cTypes
     ts <- mapM mkTup [2..16]
     return $ concat (concat [is,fs,ns,cs,ts])
  )

@@ -109,6 +109,9 @@ module Data.Array.Accelerate.Prelude (
   -- * Array operations with a scalar result
   the, null, length,
 
+  -- * Irregular data-parallelism
+  expand,
+
   -- * Sequence operations
   -- fromSeq, fromSeqElems, fromSeqShapes, toSeqInner, toSeqOuter2, toSeqOuter3, generateSeq,
 
@@ -141,6 +144,7 @@ import Data.Array.Accelerate.Classes.Ord
 import Data.Array.Accelerate.Data.Bits
 
 -- $setup
+-- >>> :seti -XFlexibleContexts
 -- >>> import Data.Array.Accelerate
 -- >>> import Data.Array.Accelerate.Interpreter
 -- >>> :{
@@ -703,7 +707,7 @@ fold1All f arr = fold1 f (flatten arr)
 --     40, 170, 0, 138]
 --
 foldSeg
-    :: forall sh e i. (Shape sh, Elt e, Elt i, IsIntegral i)
+    :: forall sh e i. (Shape sh, Elt e, Elt i, i ~ EltRepr i, IsIntegral i)
     => (Exp e -> Exp e -> Exp e)
     -> Exp e
     -> Acc (Array (sh:.Int) e)
@@ -730,15 +734,17 @@ foldSeg f z arr seg = foldSeg' f z arr (scanl plus zero seg)
 -- descriptor species the length of each of the logical sub-arrays.
 --
 fold1Seg
-    :: forall sh e i. (Shape sh, Elt e, Elt i, IsIntegral i)
+    :: forall sh e i. (Shape sh, Elt e, Elt i, i ~ EltRepr i, IsIntegral i)
     => (Exp e -> Exp e -> Exp e)
     -> Acc (Array (sh:.Int) e)
     -> Acc (Segments i)
     -> Acc (Array (sh:.Int) e)
 fold1Seg f arr seg = fold1Seg' f arr (scanl plus zero seg)
   where
+    plus :: Exp i -> Exp i -> Exp i
+    zero :: Exp i
     (plus, zero) =
-      case integralType @i of
+      case integralType @(EltRepr i) of
         TypeInt{}    -> ((+), 0)
         TypeInt8{}   -> ((+), 0)
         TypeInt16{}  -> ((+), 0)
@@ -1517,7 +1523,7 @@ enumFromStepN sh x y
 --     40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 12, 13, 14]
 --
 infixr 5 ++
-(++) :: forall sh e. (Shape sh, Elt e)
+(++) :: (Shape sh, Elt e)
      => Acc (Array (sh :. Int) e)
      -> Acc (Array (sh :. Int) e)
      -> Acc (Array (sh :. Int) e)
@@ -1909,7 +1915,7 @@ transposeOn dim1 dim2 xs =
 --     30, 31, 32, 33, 34,
 --     40, 41, 42, 43, 44]
 --
-take :: forall sh e. (Shape sh, Elt e)
+take :: (Shape sh, Elt e)
      => Exp Int
      -> Acc (Array (sh :. Int) e)
      -> Acc (Array (sh :. Int) e)
@@ -1936,7 +1942,7 @@ take = takeOn _1
 --     37, 38, 39,
 --     47, 48, 49]
 --
-drop :: forall sh e. (Shape sh, Elt e)
+drop :: (Shape sh, Elt e)
      => Exp Int
      -> Acc (Array (sh :. Int) e)
      -> Acc (Array (sh :. Int) e)
@@ -1962,7 +1968,7 @@ drop = dropOn _1
 --     30, 31, 32, 33, 34, 35, 36, 37, 38,
 --     40, 41, 42, 43, 44, 45, 46, 47, 48]
 --
-init :: forall sh e. (Shape sh, Elt e)
+init :: (Shape sh, Elt e)
      => Acc (Array (sh :. Int) e)
      -> Acc (Array (sh :. Int) e)
 init = initOn _1
@@ -1988,7 +1994,7 @@ init = initOn _1
 --     31, 32, 33, 34, 35, 36, 37, 38, 39,
 --     41, 42, 43, 44, 45, 46, 47, 48, 49]
 --
-tail :: forall sh e. (Shape sh, Elt e)
+tail :: (Shape sh, Elt e)
      => Acc (Array (sh :. Int) e)
      -> Acc (Array (sh :. Int) e)
 tail = tailOn _1
@@ -1999,7 +2005,7 @@ tail = tailOn _1
 --
 -- > slit i n = take n . drop i
 --
-slit :: forall sh e. (Shape sh, Elt e)
+slit :: (Shape sh, Elt e)
      => Exp Int                     -- ^ starting index
      -> Exp Int                     -- ^ length
      -> Acc (Array (sh :. Int) e)
@@ -2212,7 +2218,7 @@ instance IfThenElse Acc where
 -- | Repeatedly apply a function a fixed number of times
 --
 iterate
-    :: forall a. Elt a
+    :: Elt a
     => Exp Int
     -> (Exp a -> Exp a)
     -> Exp a
@@ -2228,7 +2234,7 @@ iterate n f z
 -- | Reduce along an innermost slice of an array /sequentially/, by applying a
 -- binary operator to a starting value and the array from left to right.
 --
-sfoldl :: forall sh a b. (Shape sh, Elt a, Elt b)
+sfoldl :: (Shape sh, Elt a, Elt b)
        => (Exp a -> Exp b -> Exp a)
        -> Exp a
        -> Exp sh
@@ -2245,21 +2251,21 @@ sfoldl f z ix xs
 
 -- |Extract the first component of a scalar pair.
 --
-fst :: forall a b. (Elt a, Elt b) => Exp (a, b) -> Exp a
+fst :: (Elt a, Elt b) => Exp (a, b) -> Exp a
 fst (T2 a _) = a
 
 -- |Extract the first component of an array pair.
 {-# NOINLINE[1] afst #-}
-afst :: forall a b. (Arrays a, Arrays b) => Acc (a, b) -> Acc a
+afst :: (Arrays a, Arrays b) => Acc (a, b) -> Acc a
 afst (T2 a _) = a
 
 -- |Extract the second component of a scalar pair.
 --
-snd :: forall a b. (Elt a, Elt b) => Exp (a, b) -> Exp b
+snd :: (Elt a, Elt b) => Exp (a, b) -> Exp b
 snd (T2 _ b) = b
 
 -- | Extract the second component of an array pair
-asnd :: forall a b. (Arrays a, Arrays b) => Acc (a, b) -> Acc b
+asnd :: (Arrays a, Arrays b) => Acc (a, b) -> Acc b
 asnd (T2 _ b) = b
 
 -- |Converts an uncurried function to a curried function.
@@ -2303,12 +2309,10 @@ index2 i j = lift (Z :. i :. j)
 -- | Destructs a rank-2 index to an Exp tuple of two Int`s.
 --
 unindex2
-    :: forall i. Elt i
+    :: Elt i
     => Exp (Z :. i :. i)
     -> Exp (i, i)
-unindex2 ix
-  = let Z :. i :. j = unlift ix :: Z :. Exp i :. Exp i
-    in  lift (i, j)
+unindex2 (Z_ ::. i ::. j) = T2 i j
 
 -- | Create a rank-3 index from three Exp Int`s
 --
@@ -2318,15 +2322,14 @@ index3
     -> Exp i
     -> Exp i
     -> Exp (Z :. i :. i :. i)
-index3 k j i = lift (Z :. k :. j :. i)
+index3 k j i = Z_ ::. k ::. j ::. i
 
 -- | Destruct a rank-3 index into an Exp tuple of Int`s
 unindex3
-    :: forall i. Elt i
+    :: Elt i
     => Exp (Z :. i :. i :. i)
     -> Exp (i, i, i)
-unindex3 ix = let Z :. k :. j :. i = unlift ix  :: Z :. Exp i :. Exp i :. Exp i
-              in  lift (k, j, i)
+unindex3 (Z_ ::. k ::. j ::. i) = T3 k j i
 
 
 -- Array operations with a scalar result
@@ -2350,9 +2353,107 @@ length :: Elt e => Acc (Vector e) -> Exp Int
 length = unindex1 . shape
 
 
+-- Operations to facilitate irregular data parallelism
+-- ---------------------------------------------------
+
+-- | A recipe for generating flattened implementations of some kinds of
+-- irregular nested parallelism. Given two functions that:
+--
+--   (1) for each source element, determine how many target
+--       elements it expands into; and
+--
+--   (2) computes a particular target element based on a source element and
+--       the target element index associated with the source
+--
+-- The following example implements the Sieve of Eratosthenes,
+-- a contraction style algorithm which first computes all primes less than
+-- /sqrt n/, then uses this intermediate result to sieve away all numbers
+-- in the range /[sqrt n .. n]/. The 'expand' function is used to calculate
+-- and flatten the sieves. For each prime /p/ and upper limit /c2/,
+-- function /sz/ computes the number of contributions in the sieve. Then,
+-- for each prime /p/ and sieve index /i/, the function /get/ computes the
+-- sieve contribution. The final step produces all the new primes in the
+-- interval /[c1 .. c2]/.
+--
+-- >>> :{
+--   primes :: Exp Int -> Acc (Vector Int)
+--   primes n = afst loop
+--     where
+--       c0    = unit 2
+--       a0    = use $ fromList (Z:.0) []
+--       limit = truncate (sqrt (fromIntegral (n+1) :: Exp Float))
+--       loop  = awhile
+--                 (\(T2 _   c) -> map (< n+1) c)
+--                 (\(T2 old c) ->
+--                   let c1 = the c
+--                       c2 = c1 < limit ? ( c1*c1, n+1 )
+--                       --
+--                       sieves =
+--                         let sz p    = (c2 - p) `quot` p
+--                             get p i = (2+i)*p
+--                         in
+--                         map (subtract c1) (expand sz get old)
+--                       --
+--                       new =
+--                         let m     = c2-c1
+--                             put i = let s = sieves ! i
+--                                      in s >= 0 && s < m ? (I1 s, ignore)
+--                         in
+--                         afst
+--                           $ filter (> 0)
+--                           $ permute const (enumFromN (I1 m) c1) put
+--                           $ fill (shape sieves) 0
+--                    in
+--                    T2 (old ++ new) (unit c2))
+--                 (T2 a0 c0)
+-- :}
+--
+-- >>> run $ primes 100
+-- Vector (Z :. 25) [2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97]
+--
+-- Inspired by the paper /Data-Parallel Flattening by Expansion/ by Martin
+-- Elsman, Troels Henddriksen, and Niels Gustav Westphal Serup, ARRAY'19.
+--
+-- @since 1.4.0.0
+--
+expand :: (Elt a, Elt b)
+       => (Exp a -> Exp Int)
+       -> (Exp a -> Exp Int -> Exp b)
+       -> Acc (Vector a)
+       -> Acc (Vector b)
+expand f g xs =
+  if length xs == 0
+     then use $ fromList (Z:.0) []
+     else
+      let
+          szs           = map f xs
+          T2 offset len = scanl' (+) 0 szs
+
+          m             = the len
+          n             = m + 1
+          put ix        = I1 (offset ! ix)
+
+          head_flags    :: Acc (Vector Int)
+          head_flags    = permute const (fill (I1 n) 0) put (fill (shape szs) 1)
+
+          idxs          = map (subtract 1)
+                        $ map snd
+                        $ scanl1 (segmentedL (+))
+                        $ zip head_flags
+                        $ fill (I1 m) 1
+
+          iotas         = map snd
+                        $ scanl1 (segmentedL const)
+                        $ zip head_flags
+                        $ permute const (fill (I1 n) undef) put
+                        $ enumFromN (shape xs) 0
+      in
+      zipWith g (gather iotas xs) idxs
+
+
 {--
 -- Sequence operations
--- --------------------------------------
+-- -------------------
 
 -- | Reduce a sequence by appending all the shapes and all the elements in two
 -- separate vectors.

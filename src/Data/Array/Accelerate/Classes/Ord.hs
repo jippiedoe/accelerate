@@ -7,7 +7,7 @@
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeOperators       #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# OPTIONS_GHC -fno-warn-orphans -freduction-depth=100 #-}
 -- |
 -- Module      : Data.Array.Accelerate.Classes.Ord
 -- Copyright   : [2016..2019] The Accelerate Team
@@ -73,7 +73,7 @@ class Eq a => Ord a where
 -- Local redefinition for use with RebindableSyntax (pulled forward from Prelude.hs)
 --
 ifThenElse :: Elt a => Exp Bool -> Exp a -> Exp a -> Exp a
-ifThenElse = Exp $$$ Cond
+ifThenElse (Exp c) (Exp x) (Exp y) = Exp $ SmartExp $ Cond c x y
 
 instance Ord () where
   (<)     _ _ = constant False
@@ -106,7 +106,7 @@ instance Ord sh => Ord (sh :. Int) where
 
 instance Elt Ordering where
   type EltRepr Ordering = Int8
-  eltType = TypeRscalar scalarType
+  eltType = TupRsingle scalarType
   fromElt = P.fromIntegral . P.fromEnum
   toElt   = P.toEnum . P.fromIntegral
 
@@ -149,19 +149,11 @@ preludeError x y
             , "hierarchy."
             ]
 
-lift2 :: (Elt a, Elt b, IsScalar b, b ~ EltRepr a)
-      => (Exp b -> Exp b -> Exp b)
-      -> Exp a
-      -> Exp a
-      -> Exp a
-lift2 f x y = mkUnsafeCoerce (f (mkUnsafeCoerce x) (mkUnsafeCoerce y))
-
-liftB :: (Elt a, Elt b, IsScalar b, b ~ EltRepr a)
-      => (Exp b -> Exp b -> Exp Bool)
-      -> Exp a
-      -> Exp a
-      -> Exp Bool
-liftB f x y = f (mkUnsafeCoerce x) (mkUnsafeCoerce y)
+-- To support 16-tuples, we must set the maximum recursion depth of the type
+-- checker higher. The default is 51, which appears to be a problem for
+-- 16-tuples (15-tuples do work). Hence we set a compiler flag at the top
+-- of this file: -freduction-depth=100
+--
 
 $(runQ $ do
     let
@@ -220,17 +212,6 @@ $(runQ $ do
                 max  = mkMax
             |]
 
-        mkCPrim :: Name -> Q [Dec]
-        mkCPrim t =
-          [d| instance Ord $(conT t) where
-                (<)  = liftB mkLt
-                (>)  = liftB mkGt
-                (<=) = liftB mkLtEq
-                (>=) = liftB mkGtEq
-                min  = lift2 mkMin
-                max  = lift2 mkMax
-            |]
-
         mkLt' :: [ExpQ] -> [ExpQ] -> ExpQ
         mkLt' [x] [y]       = [| $x < $y |]
         mkLt' (x:xs) (y:ys) = [| $x < $y || ( $x == $y && $(mkLt' xs ys) ) |]
@@ -270,7 +251,7 @@ $(runQ $ do
     is <- mapM mkPrim integralTypes
     fs <- mapM mkPrim floatingTypes
     ns <- mapM mkPrim nonNumTypes
-    cs <- mapM mkCPrim cTypes
+    cs <- mapM mkPrim cTypes
     ts <- mapM mkTup [2..16]
     return $ concat (concat [is,fs,ns,cs,ts])
  )
