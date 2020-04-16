@@ -43,11 +43,11 @@ import           Prelude                 hiding ( (!!)
 -- import           Data.Array.Accelerate.Trafo.NewFusion.AST
 --                                          hiding ( PreLabelledAcc(..) )
 
-import           Data.Array.Accelerate.AST
-                                         hiding ( Boundary
-                                                , PreBoundary(..)
-                                                , PreOpenAcc(..)
-                                                )
+-- import           Data.Array.Accelerate.AST
+--                                          hiding ( Boundary
+--                                                 , PreBoundary(..)
+--                                                 , PreOpenAcc(..)
+--                                                 )
 -- import           Data.Array.Accelerate.Analysis.Type
 --                                                 ( sizeOfScalarType
 --                                                 , sizeOfSingleType
@@ -209,7 +209,7 @@ deriving instance Typeable IntermediateRep
 data LoopBody permIn tempIn out fusein fuseout where
   Use :: (Shape sh, Elt e) -- TODO only holds an index, should maybe add an (Int -> Int) argument
       => Array sh e
-      -> IORef Int
+      -> IORef Int -- the transform does this for us?
       -> LoopBody pin a b fin fout
       -> LoopBody pin a (b, Array DIM0 e) fin fout
   Base :: LoopBody  pin () () 'True 'True
@@ -261,7 +261,7 @@ data LoopBody' permIn tempIn out where
 -- Represents the first part of normalise2', consisting of: xs, sum1, scn, and sum2.
 testIR1 :: IO (IntermediateRep () () ((((), Array DIM1 Int), Array DIM0 Int), Array DIM0 Int))
 testIR1 = do
-  xs   <- newIORef 0      >>= \ref -> return $
+  xs   <- newIORef 0 >>= \ref -> return $
     Use (fromList (Z:.30) [4..] :: Array DIM1 Int) ref Base
   sum1 <- newIORef (0, 0) >>= \ref -> return $
     Take (ManyToOne ref 30 (const $ modify . (+)) get) Base
@@ -279,12 +279,14 @@ testIR1 = do
 
 
 
-evalIR :: IntermediateRep pinputs () outputs
-       -> Val pinputs
-       -> Val outputs
-evalIR = undefined
-
 -- Evaluates the IR and stores the output in the provided mutable arrays
+evalIR :: (Typeable pinputs, Typeable outputs)
+       => IntermediateRep pinputs () outputs
+       -> ValArr pinputs
+       -> ValArr outputs
+       -> IO ()
+evalIR ir p o = evalIR' ir p EmptyEnv o Id Id
+
 evalIR' :: (Typeable pInputs, Typeable tInputs, Typeable outputs, Typeable tInputs', Typeable outputs')
         => IntermediateRep pInputs tInputs outputs   -- The instruction to execute. Contains recursive IR's (ir), LoopBodies (bdy), Transforms (ti', to', bh, ch), Temporary arrays (tmp)
         -> ValArr          pInputs                   -- The unfused inputs, p
@@ -347,9 +349,9 @@ evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) Id       Id       = evalLB'
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) Id       = evalLB' lb' i 0 p t o >> evalLB lb p ts os a  Id
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) Id       (Fn j b) = evalLB' lb' 0 j p t o >> evalLB lb p ts os Id b
 evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) (Fn j b) = evalLB' lb' i j p t o >> evalLB lb p ts os a  b
--- TODO this one is not quite right
-evalLB Use{} _ _ PushEnv{} _ _ = undefined --(Use xs r lb) p ts             (PushEnv os o) ti       Id        = readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (-i) xs o >> evalLB lb p ts os ti Id
---evalLB Use{} _ _ _ _ _ = undefined --(Use xs r lb) p ts             (PushEnv os o) ti       (Fn j b)  = readIORef r >>= \i -> modifyIORef r (+1) >> assignArr (j-i)    xs o >> evalLB lb p ts os ti b
+-- copy the value from xs into the output (this is the only time we 'copy' array elements!)
+evalLB (Use xs r lb) p ts             (PushEnv os o) ti       Id       = readIORef r >>= \i -> modifyIORef r (+1) >> write xs o i 0 >> evalLB lb p ts os ti Id
+evalLB (Use xs r lb) p ts             (PushEnv os o) ti       (Fn j b) = readIORef r >>= \i -> modifyIORef r (+1) >> write xs o i j >> evalLB lb p ts os ti b
 -- Recurse
 evalLB lb p (PushEnv ts _) o (Skip idxt) idxo = evalLB lb p ts o idxt idxo
 evalLB lb p t (PushEnv os _) idxt (Skip idxo) = evalLB lb p t os idxt idxo
@@ -359,7 +361,13 @@ evalLB Take{} _ EmptyEnv _ x _ = case x of {} -- possible for these cases,
 evalLB Take{} _ _ EmptyEnv _ x = case x of {} -- so this satisfies GHC's
 evalLB Use {} _ _ EmptyEnv _ x = case x of {} -- incomplete pattern check
 
-
+-- write the 'inoff'-th element of 'from' to the 'outoff'-th element of 'to'
+-- only called by evalLB, when a 'Use' brings an array into scope!
+-- alternatively, 'Use' could also have been a constructor of the IR...
+write :: Elt e => Array sh1 e -> Array sh2 e -> Int -> Int -> IO ()
+write (Array _ from) (Array _ to) inoff outoff = do
+  res <- unsafeReadArrayData from inoff
+  unsafeWriteArrayData to outoff res
 
 evalLB' :: LoopBody' pinputs (Array sh1 e1) (Array sh2 e2)
         -> Int -- offset input  index
