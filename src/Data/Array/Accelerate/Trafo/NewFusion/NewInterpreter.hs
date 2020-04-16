@@ -21,7 +21,7 @@
 {-# OPTIONS_HADDOCK prune #-}
 
 
-module Data.Array.Accelerate.Trafo.NewFusion.NewInterpreter where
+module Data.Array.Accelerate.Trafo.NewFusion.NewInterpreter (test) where
 
 -- standard libraries
 import           Control.Monad
@@ -87,12 +87,13 @@ data ValArr env where
   EmptyEnv :: ValArr ()
   PushEnv  :: (Shape sh, Elt e, Typeable env) => ValArr env -> Array sh e -> ValArr (env, Array sh e)
 deriving instance Typeable ValArr
+deriving instance Show (ValArr a)
 
 --TODO refactor many places to use ValArr' :)
 data ValArr' env where
   ValArr' :: (Typeable env, Typeable env')
     => Transform env env' -> ValArr env' -> ValArr' env
-
+deriving instance Show (ValArr' a)
 
 data Neg1 = Neg1 deriving (Show, Typeable)
 instance ArrayElt Neg1 where
@@ -275,8 +276,15 @@ testIR1 = do
   let inner = Before' (Skip Id) Id (Skip (Skip Id)) (Fn 0 (Fn 0 (Skip Id))) xs sum1sum2scn :: IntermediateRep () () ((((), Array DIM0 Int), Array Neg1 Int), Array Neg1 Int)
   return $ For inner 30 Id (Fn 0 (Fn 0 (Fn 1 Id)))
 
-
-
+test :: IO ()
+test = do
+  ir <- testIR1
+  a <- Array (fromElt Z) <$> newArrayData 1
+  b <- Array (fromElt Z) <$> newArrayData 1
+  c <- Array (fromElt $ Z:.(30 :: Int)) <$> newArrayData 30
+  let output = PushEnv (PushEnv (PushEnv EmptyEnv c) b) a
+  evalIR ir EmptyEnv output
+  print output
 
 
 -- Evaluates the IR and stores the output in the provided mutable arrays
