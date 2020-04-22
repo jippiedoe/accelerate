@@ -403,6 +403,7 @@ Library
         Data.Array.Accelerate.Trafo.NewFusion.AST
         Data.Array.Accelerate.Trafo.NewFusion.LetBind
         Data.Array.Accelerate.Trafo.NewFusion.Solver
+        Data.Array.Accelerate.Trafo.NewFusion.Neg1
 
   if flag(nofib)
     build-depends:
