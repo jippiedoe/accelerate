@@ -9,7 +9,7 @@ packages:
 # extra-deps: []
 extra-deps:
 - git: https://github.com/dpvanbalen/glpk-hs
-  commit: 70153825f6081ff544b71cb771d345dba1238215
+  commit: 890aa5aa6eb9b90f5d185dfb8d0fe6addc17732d
 - gasp-1.2.0.0@sha256:588f9d470ed8e51ff3819b496d5a5a2f41c55b613fee7f5c59da6271e73ef7d3,697
 
 # Override default flag values for local packages and extra-deps

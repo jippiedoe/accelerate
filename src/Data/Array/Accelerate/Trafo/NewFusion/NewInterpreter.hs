@@ -9,7 +9,7 @@
 {-# LANGUAGE FlexibleInstances      #-}
 {-# LANGUAGE UndecidableInstances   #-}
 {-# LANGUAGE PolyKinds              #-}
-{-# LANGUAGE EmptyCase              #-}
+-- {-# LANGUAGE EmptyCase              #-}
 -- {-# LANGUAGE PartialTypeSignatures  #-} --todo maybe remove
 {-# LANGUAGE DeriveDataTypeable     #-}
 {-# LANGUAGE TypeApplications       #-}
@@ -75,6 +75,7 @@ deriving instance Eq (Transform a b)
 
 -- doesn't have to strictly be a partition, probably?
 --TODO specify: is the intersection always empty? Is the union always ab? Is it just two subsets?
+-- Partitions inside of the IR should probably be strict partitions, and also not contain any (Fn i _) with i /= 0
 data Partition a b ab = Partition (Transform a ab) (Transform b ab)
 
 compose :: (Typeable a, Typeable b, Typeable c) => Transform b c -> Transform a b -> Transform a c
@@ -116,7 +117,7 @@ data IntermediateRep permanentIn tempIn out where
           -> LoopBody        pin a  b x 'True
           -> IntermediateRep pin ab c
           -> IntermediateRep pin a  c
-  After   :: Typeable b
+  After   :: (Typeable a, Typeable b, Typeable ab)
           => Partition a b ab
           -> ValArr b -- temporary result allocation place, the dimensions (concrete shapes) should be computable while constructing this IR (and should always be Z)
           -> IntermediateRep pin a  b
@@ -148,10 +149,11 @@ deriving instance Typeable IntermediateRep
 
 data LoopBody permIn tempIn out fusein fuseout where
   Base :: LoopBody  pin () () 'True 'True
-  Weak :: Typeable a
-       => Transform a a'
-       -> LoopBody p a  b fin fout
-       -> LoopBody p a' b fin fout
+  Weak :: (Typeable a, Typeable b, Typeable a', Typeable b')
+       => Partition a rest a'
+       -> Partition rest b b'
+       -> LoopBody p a b fin fout
+       -> LoopBody p a' b' fin fout
   Use  :: (Shape sh, Elt e, Typeable b) -- TODO only holds an index, should maybe add an (Int -> Int) argument
        => Array sh e
        -> IORef Int
@@ -223,91 +225,82 @@ evalIR :: (Typeable pinputs, Typeable outputs)
        -> ValArr pinputs
        -> ValArr outputs
        -> IO ()
-evalIR ir p o = evalIR' ir p EmptyEnv o Id Id
+evalIR ir p o = evalIR' ir p (ValArr' Id EmptyEnv) (ValArr' Id o)
 
-evalIR' :: (Typeable pInputs, Typeable tInputs, Typeable outputs, Typeable tInputs', Typeable outputs')
+-- TODO simplify further
+evalIR' :: (Typeable pInputs, Typeable tInputs, Typeable outputs)
         => IntermediateRep pInputs tInputs outputs   -- The instruction to execute. Contains recursive IR's (ir), LoopBodies (bdy), Transforms (ti', to', bh, ch), Temporary arrays (tmp)
         -> ValArr          pInputs                   -- The unfused inputs, p
-        -> ValArr                  tInputs'          -- The   fused inputs, t
-        -> ValArr                          outputs'  -- The         output, o
-        -> Transform tInputs tInputs'                -- Transform   inputs, ti
-        -> Transform outputs outputs'                -- Transform   output, to
+        -> ValArr'                 tInputs           -- The   fused inputs, t
+        -> ValArr'                         outputs   -- The         output, o
         -> IO ()
-evalIR' (Weaken trans ir)                                    p t o ti to =
-                      evalIR' ir p t o (compose ti trans) to
-evalIR' (For ir n ti' to')                                   p t o ti to =
+evalIR' (Simple bdy)       p t              o = evalLB bdy p t o
+evalIR' (Weaken trans ir)  p (ValArr' ti t) o =
+                      evalIR' ir p (ValArr' (compose ti trans) t) o
+evalIR' (For ir n ti' to') p (ValArr' ti t) (ValArr' to o) =
   (`traverse_` [0..n-1]) $ \i ->
-                      evalIR' ir p t o (compose ti (i $* ti')) (compose to (i $* to'))
-evalIR' (Simple bdy)                                         p t o ti to =
-                      evalLB bdy p t o ti to
-evalIR' (Before  (Partition ta tb) b bdy ir)                 p t o ti to =
-  case fuseEnvs ta tb (ValArr' ti t) (ValArr' Id b) of
-      ValArr' tc c -> evalLB bdy p t c ti (compose tc tb)
-                   >> evalIR' ir p c o tc to
-evalIR' (After   (Partition ta tb) b ir bdy)                 p t o ti to =
-  case fuseEnvs ta tb (ValArr' ti t) (ValArr' Id b) of
-      ValArr' tc c -> evalIR' ir p t c ti (compose tc tb)
-                   >> evalLB bdy p c o tc to
-evalIR' (Before' (Partition ta tb) (Partition bh ch) bdy ir) p t o ti to =
-  case fuseEnvs ta tb (ValArr' ti t) (ValArr' (compose to bh) o) of
-      ValArr' tc c -> evalLB bdy p t o ti (compose to bh)
-                   >> evalIR' ir p c o tc (compose to ch)
-evalIR' (After'  (Partition ta tb) (Partition bh ch) ir bdy) p t o ti to =
-  case fuseEnvs ta tb (ValArr' ti t) (ValArr' (compose to bh) o) of
-      ValArr' tc c -> evalIR' ir p t o ti (compose to bh)
-                   >> evalLB bdy p c o tc (compose to ch)
-evalIR' (Besides (Partition bh ch) bdy ir)                   p t o ti to =
-                      evalLB bdy p t o ti (compose to bh)
-                   >> evalIR' ir p t o ti (compose to ch)
+                  evalIR' ir p (ValArr' (compose ti (i $* ti')) t) (ValArr' (compose to (i $* to')) o)
+evalIR' (Before pt@(Partition _ tb) b bdy ir) p t o              =
+  case fuseEnvs pt t (ValArr' Id b) of
+  ValArr' tc c -> evalLB bdy p t              (ValArr' (compose tc tb) c)
+               >> evalIR' ir p (ValArr' tc c) o
+evalIR' (After  pt@(Partition _ tb) b ir bdy) p t o              =
+  case fuseEnvs pt t (ValArr' Id b) of
+  ValArr' tc c -> evalIR' ir p t              (ValArr' (compose tc tb) c)
+               >> evalLB bdy p (ValArr' tc c) o
+evalIR' (Before' pt (Partition bh ch) bdy ir) p t (ValArr' to o) =
+  case fuseEnvs pt t (ValArr' (compose to bh) o) of
+  ValArr' tc c -> evalLB bdy p t              (ValArr' (compose to bh) o)
+               >> evalIR' ir p (ValArr' tc c) (ValArr' (compose to ch) o)
+evalIR' (After'  pt (Partition bh ch) ir bdy) p t (ValArr' to o) =
+  case fuseEnvs pt t (ValArr' (compose to bh) o) of
+  ValArr' tc c -> evalIR' ir p t              (ValArr' (compose to bh) o)
+               >> evalLB bdy p (ValArr' tc c) (ValArr' (compose to ch) o)
+evalIR' (Besides    (Partition bh ch) bdy ir) p t (ValArr' to o) =
+                  evalLB bdy p t              (ValArr' (compose to bh) o)
+               >> evalIR' ir p t              (ValArr' (compose to ch) o)
 
--- assumes that a and b are disjoint, and together make up c
+
 -- this function is honestly not pretty, but it doesn't quite translate nicely
 -- into composition etc..
 -- this function is a lot stricter than it needs to be, to assert some probable invariants: TODO check them to make sure
-fuseEnvs :: Transform a c -> Transform b c -> ValArr' a -> ValArr' b -> ValArr' c
-fuseEnvs Id _ a _ = a
-fuseEnvs _ Id _ b = b
-fuseEnvs (Skip f) g@Fn{} a (ValArr' h (PushEnv bs' b'))
+fuseEnvs :: Partition a b c -> ValArr' a -> ValArr' b -> ValArr' c
+fuseEnvs (Partition Id _) a _ = a
+fuseEnvs (Partition _ Id) _ b = b
+fuseEnvs (Partition (Skip f) g@Fn{}) a (ValArr' h (PushEnv bs' b'))
   = case g of -- for some reason, you can't give as detailed type annotations in the top level patternmatch
     ((Fn 0 g') :: Transform (x, Array sh e) (y, Array sh' e))
       | Just Refl <- eqT @sh @sh' -> case h of
-        Fn i tr -> case fuseEnvs f g' a (ValArr' tr bs') of
+        Fn i tr -> case fuseEnvs (Partition f g') a (ValArr' tr bs') of
           ValArr' t x -> ValArr' (Fn i t) (PushEnv x b')
-        Id      -> case fuseEnvs f g' a (ValArr' Id bs') of
+        Id      -> case fuseEnvs (Partition f g') a (ValArr' Id bs') of
           ValArr' t x -> ValArr' (Fn 0 t) (PushEnv x b')
-        Skip tr -> fuseEnvs (Skip f) g a (ValArr' tr bs')
+        Skip tr -> fuseEnvs (Partition (Skip f) g) a (ValArr' tr bs')
     _ -> error "fuseEnvs, bc changes index"
-fuseEnvs f@Fn{} g@Skip{} a b = fuseEnvs g f b a -- call the case above
-fuseEnvs _ _ _ _ = error "fuseEnvs"
+fuseEnvs (Partition f@Fn{} g@Skip{}) a b = fuseEnvs (Partition g f) b a -- call the case above
+fuseEnvs _ _ _ = error "fuseEnvs"
 
 
 -- evaluate one iteration of a loopbody
-evalLB :: (Typeable tinputs, Typeable tinputs')
+evalLB :: Typeable tinputs
        => LoopBody pinputs tinputs outputs x y
        -> ValArr pinputs
-       -> ValArr tinputs'
-       -> ValArr outputs'
-       -> Transform tinputs tinputs'
-       -> Transform outputs outputs'
+       -> ValArr' tinputs
+       -> ValArr' outputs
        -> IO ()
-evalLB Base _ _ _ Id Id = return ()
-evalLB (Weak tr lb) p t o ti to = evalLB lb p t o (compose ti tr) to
+evalLB Base _ _ _ = return ()
+-- evalLB (Weak (Partition aa' resta') (Partition restb' bb') lb) p (ValArr' ti t) (ValArr' to o) = undefined --TODO DO THIS
 -- Evaluate the LoopBody' and recurse
-evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) Id       Id       = evalLB' lb' 0 0 p t o >> evalLB lb p ts os Id Id
-evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) Id       = evalLB' lb' i 0 p t o >> evalLB lb p ts os a  Id
-evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) Id       (Fn j b) = evalLB' lb' 0 j p t o >> evalLB lb p ts os Id b
-evalLB (Take lb' lb) p (PushEnv ts t) (PushEnv os o) (Fn i a) (Fn j b) = evalLB' lb' i j p t o >> evalLB lb p ts os a  b
+evalLB (Take lb' lb) p (ValArr' Id       (PushEnv ts t)) (ValArr' Id       (PushEnv os o)) = evalLB' lb' 0 0 p t o >> evalLB lb p (ValArr' Id ts) (ValArr' Id os)
+evalLB (Take lb' lb) p (ValArr' (Fn i a) (PushEnv ts t)) (ValArr' Id       (PushEnv os o)) = evalLB' lb' i 0 p t o >> evalLB lb p (ValArr' a  ts) (ValArr' Id os)
+evalLB (Take lb' lb) p (ValArr' Id       (PushEnv ts t)) (ValArr' (Fn j b) (PushEnv os o)) = evalLB' lb' 0 j p t o >> evalLB lb p (ValArr' Id ts) (ValArr' b  os)
+evalLB (Take lb' lb) p (ValArr' (Fn i a) (PushEnv ts t)) (ValArr' (Fn j b) (PushEnv os o)) = evalLB' lb' i j p t o >> evalLB lb p (ValArr' a  ts) (ValArr' b  os)
 -- copy the value from xs into the output (this is the only time we 'copy' array elements!)
-evalLB (Use xs r lb) p ts             (PushEnv os o) ti       Id       = readIORef r >>= \i -> modifyIORef r (+1) >> write xs o i 0 >> evalLB lb p ts os ti Id
-evalLB (Use xs r lb) p ts             (PushEnv os o) ti       (Fn j b) = readIORef r >>= \i -> modifyIORef r (+1) >> write xs o i j >> evalLB lb p ts os ti b
+evalLB (Use xs r lb) p (ValArr' ti                ts   ) (ValArr' Id       (PushEnv os o)) = readIORef r >>= \i -> modifyIORef r (+1) >> write xs o i 0 >> evalLB lb p (ValArr' ti ts) (ValArr' Id os)
+evalLB (Use xs r lb) p (ValArr' ti                ts   ) (ValArr' (Fn j b) (PushEnv os o)) = readIORef r >>= \i -> modifyIORef r (+1) >> write xs o i j >> evalLB lb p (ValArr' ti ts) (ValArr' b os)
 -- Recurse
-evalLB lb p (PushEnv ts _) o (Skip idxt) idxo = evalLB lb p ts o idxt idxo
-evalLB lb p t (PushEnv os _) idxt (Skip idxo) = evalLB lb p t os idxt idxo
-
-                                              -- There is no Transform
-evalLB Take{} _ EmptyEnv _ x _ = case x of {} -- possible for these cases,
-evalLB Take{} _ _ EmptyEnv _ x = case x of {} -- so this satisfies GHC's
-evalLB Use {} _ _ EmptyEnv _ x = case x of {} -- incomplete pattern check
+evalLB lb p (ValArr' (Skip idxt) (PushEnv ts _)) (ValArr' idxo o) = evalLB lb p (ValArr' idxt ts) (ValArr' idxo  o)
+evalLB lb p (ValArr' idxt t) (ValArr' (Skip idxo) (PushEnv os _)) = evalLB lb p (ValArr' idxt  t) (ValArr' idxo os)
 
 -- write the 'inoff'-th element of 'from' to the 'outoff'-th element of 'to'
 -- only called by evalLB, when a 'Use' brings an array into scope!
@@ -413,21 +406,52 @@ fuseHorizontal (For bIR n'  ti'  to')
                 | otherwise = error $ "fuseHorizontal, FOR loops don't match: "++ show n' ++ " " ++ show n''
 fuseHorizontal (Weaken t ir1) ir2 aa' aa'' bb' bb'' = fuseHorizontal ir1 ir2 (compose aa' t) aa'' bb' bb''
 fuseHorizontal ir1 (Weaken t ir2) aa' aa'' bb' bb'' = fuseHorizontal ir1 ir2 aa' (compose aa'' t) bb' bb''
-fuseHorizontal (Simple lb) ir aa' aa'' bb' bb'' = Besides (Partition bb' bb'') (Weak aa' lb) $ Weaken aa'' ir
-fuseHorizontal ir (Simple lb) aa' aa'' bb' bb'' = Besides (Partition bb'' bb') (Weak aa'' lb) $ Weaken aa' ir
+fuseHorizontal (Simple lb) ir aa' aa'' bb' bb'' = Besides (Partition bb' bb'') (Weak (Partition aa'  mkSkips) trivialPartition lb) $ Weaken aa'' ir
+fuseHorizontal ir (Simple lb) aa' aa'' bb' bb'' = Besides (Partition bb'' bb') (Weak (Partition aa'' mkSkips) trivialPartition lb) $ Weaken aa'  ir
 fuseHorizontal (Before part b lb ir1) ir2 aa' aa'' bb' bb'' = case weakenPartition part aa' Id of
   Exists' (PartitionW (Partition t1 t2) t3) ->
-    Before (Partition t1 t2) b (Weak aa' lb) (fuseHorizontal ir1 ir2 t3 (compose t1 aa'') bb' bb'')
+    Before (Partition t1 t2) b (Weak (Partition aa'  mkSkips) trivialPartition lb) (fuseHorizontal ir1 ir2 t3 (compose t1 aa'') bb' bb'')
 fuseHorizontal ir1 (Before part b lb ir2) aa' aa'' bb' bb'' = case weakenPartition part aa'' Id of
   Exists' (PartitionW (Partition t1 t2) t3) ->
-    Before (Partition t1 t2) b (Weak aa'' lb) (fuseHorizontal ir1 ir2 (compose t1 aa') t3 bb' bb'')
+    Before (Partition t1 t2) b (Weak (Partition aa'' mkSkips) trivialPartition lb) (fuseHorizontal ir1 ir2 (compose t1 aa') t3 bb' bb'')
+-- fuseHorizontal (After part b ir1 lb) ir2 aa' aa'' bb' bb'' = case weakenPartition part aa' Id of
+--   Exists' (PartitionW (Partition t1 t2) t3) -> undefined --TODO WRITE
 fuseHorizontal _ _ _ _ _ _ = undefined
 
 data PartitionW a b ab a' b' ab' = PartitionW (Partition a' b' ab') (Transform ab ab')
 
 weakenPartition :: forall a b ab a' b'. (Typeable a, Typeable b, Typeable ab, Typeable a', Typeable b')
                 => Partition a b ab -> Transform a a' -> Transform b b' -> Exists' (PartitionW a b ab a' b')
-weakenPartition _ _ _ = undefined-- TODO
+weakenPartition (Partition Skip{} Skip{}) _ _ = error "two skips"
+weakenPartition (Partition x'@Fn{} (Skip y)) Id g
+  | (Fn i x :: Transform (from, Array sh e) (to, Array sh' e)) <- x' = case weakenPartition (Partition x y) Id g of
+    Exists' (PartitionW (Partition l (r :: Transform b' ab')) w) -> Exists' (PartitionW (Partition (Fn i l :: Transform (from, Array sh e) (ab', Array sh' e)) (Skip r)) (Fn 0 w))
+weakenPartition (Partition x'@Fn{} (Skip _)) f'@Fn{} _
+  | (Fn i _ :: Transform (from, Array sh e) (to, Array sh' e)) <- x'
+  , (Fn j _ :: Transform (from, Array sh e) (to2, Array sh'' e)) <- f'
+  , i /= 0
+  , j /= 0 = error $ "I don't know what to do here" ++ show i ++ show j
+weakenPartition (Partition x'@Fn{} (Skip y)) f'@Fn{} g
+  | (Fn i x :: Transform (from, Array sh e) (to, Array sh' e)) <- x'
+  , (Fn j f :: Transform (from, Array sh e) (to2, Array sh'' e)) <- f'
+  , j == 0 -- this case should probably be redundant, as it behaves the same as below if i=j=0 and j should always be 0?
+  , Just Refl <- eqT @sh @sh'' = case weakenPartition (Partition x y) f g of
+    Exists' (PartitionW (Partition l (r :: Transform b' ab')) w) -> Exists' (PartitionW (Partition (Fn j l :: Transform (to2, Array sh e) (ab', Array sh' e)) (Skip r)) (Fn i w))
+weakenPartition (Partition x'@Fn{} (Skip y)) f'@Fn{} g
+  | (Fn i x :: Transform (from, Array sh e) (to, Array sh' e)) <- x'
+  , (Fn j f :: Transform (from, Array sh e) (to2, Array sh'' e)) <- f'
+  , i == 0
+  , Just Refl <- eqT @sh @sh' = case weakenPartition (Partition x y) f g of
+    Exists' (PartitionW (Partition l (r :: Transform b' ab')) w) -> Exists' (PartitionW (Partition (Fn 0 l :: Transform (to2, Array sh'' e) (ab', Array sh'' e)) (Skip r)) (Fn j w :: Transform (to, Array sh e) (ab', Array sh'' e)))
+weakenPartition (Partition (Fn i x) (Skip y)) f'@Skip{} g
+  | (Skip f :: Transform from (to, Array sh e)) <- f' = case weakenPartition (Partition (Fn i x) (Skip y)) f g of
+  Exists' (PartitionW (Partition l r) (w :: Transform ab ab')) -> Exists' $ PartitionW (Partition (Fn 0 l) (Skip r)) (Skip w :: Transform ab (ab', Array sh e))
+weakenPartition (Partition Id y'@Skip{}) Id g
+  | (Skip y :: Transform b (from, Array sh e)) <- y' = case weakenPartition (Partition Id y) Id g of
+  Exists' (PartitionW (Partition l (r :: Transform b' ab')) w) -> Exists' $ PartitionW (Partition (Fn 0 l :: Transform (from, Array sh e) (ab', Array sh e)) (Skip r)) (Fn 0 w)
+weakenPartition (Partition x@Skip{} y) f g = case weakenPartition (Partition y x) g f of -- mirror the above cases
+  Exists' (PartitionW (Partition r l) w) -> Exists' (PartitionW (Partition l r) w)
+weakenPartition _ _ _ = error "no skips"
 
 -- used for horizontally fusing FOR loops. Notation matches 'fuseHorizontal', not 'mkSmth'. Note that some of the type variables are phantom.
 data Something b' b'' b b1' b1'' b1 = Something (Transform b1 b) (Transform b1' b1) (Transform b1'' b1)
@@ -498,34 +522,38 @@ data LBTransform a b ab = LBT (Transform a ab) (Transform b ab)
 --                 -> Transform b b'
 --                 -> Exists' (LBTransform a b)
 
-mkLBTransforms :: (Typeable a, Typeable b) => LoopBody p a b x y -> Exists' (LBTransform a b)
-mkLBTransforms Base         = Exists' $ LBT Id Id
-mkLBTransforms (Weak f (Weak g lb)) = mkLBTransforms (Weak (compose f g) lb)
-mkLBTransforms (Weak Id lb) = case mkLBTransforms lb of
-  Exists' (LBT a b) -> Exists' $ LBT a b
-mkLBTransforms (Weak asdf@Skip{} lb) = case asdf of
-  (Skip f :: Transform from (to, Array sh e)) -> case mkLBTransforms (Weak f lb) of
-    Exists' (LBT (a :: Transform a' ab') b) ->
-      Exists' $ LBT (Fn 0 a :: Transform (a', Array sh e) (ab', Array sh e)) (Skip b)
-  _ -> undefined
-mkLBTransforms (Weak t@(Fn 0 _) (Use (_ :: Array sh e) _ lb)) = case mkLBTransforms (Weak t lb) of
-  Exists' (LBT a b :: LBTransform a b ab) ->
-    Exists' $ LBT (Skip a) (Fn 0 b :: Transform (b, Array DIM0 e) (ab, Array DIM0 e))
-mkLBTransforms (Weak f'@(Fn 0 _) (Take (_ :: LoopBody' p (Array sh1 e1) (Array sh2 e2)) lb)) =
-  case f' of
-  (Fn 0 f :: Transform (from, Array sh1' e1') (to, Array sh e)) ->
-    case eqT @(Array sh1 e1) @(Array sh1' e1') of -- has to be equal
-    Just Refl ->
-      case mkLBTransforms (Weak f lb) of
-      Exists' (LBT (a :: Transform froma toa) (b :: Transform fromb tob)) ->
-        Exists' $ LBT (Skip (Fn 0 a :: Transform (froma, Array sh e) (toa, Array sh e)) :: Transform (froma, Array sh e) ((toa, Array sh e), Array sh2 e2))
-                                         (Fn 0 (Skip b))
-    Nothing -> undefined
-  _ -> undefined
-mkLBTransforms _ = undefined -- TODO finish
+-- see if this is even needed before updating it
+-- mkLBTransforms :: (Typeable a, Typeable b) => LoopBody p a b x y -> Exists' (LBTransform a b)
+-- mkLBTransforms Base         = Exists' $ LBT Id Id
+-- mkLBTransforms (Weak f (Weak g lb)) = mkLBTransforms (Weak (compose f g) lb)
+-- mkLBTransforms (Weak Id lb) = case mkLBTransforms lb of
+--   Exists' (LBT a b) -> Exists' $ LBT a b
+-- mkLBTransforms (Weak asdf@Skip{} lb) = case asdf of
+--   (Skip f :: Transform from (to, Array sh e)) -> case mkLBTransforms (Weak f lb) of
+--     Exists' (LBT (a :: Transform a' ab') b) ->
+--       Exists' $ LBT (Fn 0 a :: Transform (a', Array sh e) (ab', Array sh e)) (Skip b)
+--   _ -> undefined
+-- mkLBTransforms (Weak t@(Fn 0 _) (Use (_ :: Array sh e) _ lb)) = case mkLBTransforms (Weak t lb) of
+--   Exists' (LBT a b :: LBTransform a b ab) ->
+--     Exists' $ LBT (Skip a) (Fn 0 b :: Transform (b, Array DIM0 e) (ab, Array DIM0 e))
+-- mkLBTransforms (Weak f'@(Fn 0 _) (Take (_ :: LoopBody' p (Array sh1 e1) (Array sh2 e2)) lb)) =
+--   case f' of
+--   (Fn 0 f :: Transform (from, Array sh1' e1') (to, Array sh e)) ->
+--     case eqT @(Array sh1 e1) @(Array sh1' e1') of -- has to be equal
+--     Just Refl ->
+--       case mkLBTransforms (Weak f lb) of
+--       Exists' (LBT (a :: Transform froma toa) (b :: Transform fromb tob)) ->
+--         Exists' $ LBT (Skip (Fn 0 a :: Transform (froma, Array sh e) (toa, Array sh e)) :: Transform (froma, Array sh e) ((toa, Array sh e), Array sh2 e2))
+--                                          (Fn 0 (Skip b))
+--     Nothing -> undefined
+--   _ -> undefined
+-- mkLBTransforms _ = undefined -- TODO finish
 
+trivialPartition :: forall a. Typeable a => Partition () a a
+trivialPartition = Partition mkSkips Id
 
-
+mkSkips :: forall a. Typeable a => Transform () a
+mkSkips = undefined -- TODO
 
 makeTemp :: forall a. Typeable a => IO (ValArr a)
 makeTemp = do

@@ -6,13 +6,18 @@ resolver: nightly-2019-12-13
 packages:
 - .
 
-# extra-deps: []
+extra-deps:
+- git: https://github.com/dpvanbalen/glpk-hs
+  commit: 7c79649119a0d986d7d5fe4e9bc8f97f9ec14c31
+- gasp-1.2.0.0@sha256:588f9d470ed8e51ff3819b496d5a5a2f41c55b613fee7f5c59da6271e73ef7d3,697
+
 
 # Override default flag values for local packages and extra-deps
 # flags: {}
 
 # Extra global and per-package GHC options
-# ghc-options: {}
+ghc-options:
+  "$locals": -threaded
 
 # Extra package databases containing global packages
 # extra-package-dbs: []
