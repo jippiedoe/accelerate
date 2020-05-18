@@ -22,6 +22,8 @@
 
 module Data.Array.Accelerate.Trafo.NewFusion.NewInterpreter (test) where
 
+import System.IO.Unsafe
+
 import           Control.Monad
 import           Data.Typeable
 import           Prelude                 hiding ( (!!)
@@ -45,17 +47,25 @@ data ExistsArr where
 
 data ValArr env where
   EmptyEnv :: ValArr ()
-  PushEnv  :: (Shape sh, Elt e, Typeable env) => ValArr env -> Array sh e -> ValArr (env, Array sh e)
+  PushEnv  :: (Shape sh, Elt e, Typeable env)
+           => ValArr env
+           -> Array sh e
+           -> ValArr (env, Array sh e)
 deriving instance Typeable ValArr
 deriving instance Show (ValArr a)
 
---TODO refactor many places to use ValArr'
 data ValArr' env where
   ValArr' :: (Typeable env, Typeable env')
-    => Transform env env' -> ValArr env' -> ValArr' env
+          => Transform env env'
+          -> ValArr env'
+          -> ValArr' env
 deriving instance Show (ValArr' a)
 
-
+-- This would be valid, if we didn't have the Typeable constraints
+-- they are there for a reason though: we only want Transforms that work on tuplists of arrays.
+-- instance Category Transform where
+--   id = Id
+--   (.) = compose
 
 -- 'from' is a "subset" of 'to'
 data Transform from to where
@@ -147,9 +157,10 @@ data IntermediateRep permanentIn tempIn out where
           -> IntermediateRep pin a hor
 deriving instance Typeable IntermediateRep
 
+--TODO replace with Idxs? also makes it easier to add zipwith..
 data LoopBody permIn tempIn out fusein fuseout where
   Base :: LoopBody  pin () () 'True 'True
-  Weak :: (Typeable a, Typeable b, Typeable a', Typeable b')
+  Weak :: (Typeable a, Typeable b, Typeable a', Typeable b', Typeable rest)
        => Partition a rest a'
        -> Partition rest b b'
        -> LoopBody p a b fin fout
@@ -227,7 +238,8 @@ evalIR :: (Typeable pinputs, Typeable outputs)
        -> IO ()
 evalIR ir p o = evalIR' ir p (ValArr' Id EmptyEnv) (ValArr' Id o)
 
--- TODO simplify further
+
+
 evalIR' :: (Typeable pInputs, Typeable tInputs, Typeable outputs)
         => IntermediateRep pInputs tInputs outputs   -- The instruction to execute. Contains recursive IR's (ir), LoopBodies (bdy), Transforms (ti', to', bh, ch), Temporary arrays (tmp)
         -> ValArr          pInputs                   -- The unfused inputs, p
@@ -280,7 +292,6 @@ fuseEnvs (Partition (Skip f) g@Fn{}) a (ValArr' h (PushEnv bs' b'))
 fuseEnvs (Partition f@Fn{} g@Skip{}) a b = fuseEnvs (Partition g f) b a -- call the case above
 fuseEnvs _ _ _ = error "fuseEnvs"
 
-
 -- evaluate one iteration of a loopbody
 evalLB :: Typeable tinputs
        => LoopBody pinputs tinputs outputs x y
@@ -289,7 +300,11 @@ evalLB :: Typeable tinputs
        -> ValArr' outputs
        -> IO ()
 evalLB Base _ _ _ = return ()
--- evalLB (Weak (Partition aa' resta') (Partition restb' bb') lb) p (ValArr' ti t) (ValArr' to o) = undefined --TODO DO THIS
+evalLB (Weak (Partition aa' resta') (Partition restb' bb') lb) p (ValArr' ti t) (ValArr' to o) =
+  copy (ValArr' (compose ti resta') t) (ValArr' (compose to restb') o)
+  >> evalLB lb p (ValArr' (compose ti aa') t) (ValArr' (compose to bb') o)
+  -- case fuseEnvs (Partition restb' bb') (ValArr' (compose ti resta') t) (ValArr' ) of
+  -- _ -> _
 -- Evaluate the LoopBody' and recurse
 evalLB (Take lb' lb) p (ValArr' Id       (PushEnv ts t)) (ValArr' Id       (PushEnv os o)) = evalLB' lb' 0 0 p t o >> evalLB lb p (ValArr' Id ts) (ValArr' Id os)
 evalLB (Take lb' lb) p (ValArr' (Fn i a) (PushEnv ts t)) (ValArr' Id       (PushEnv os o)) = evalLB' lb' i 0 p t o >> evalLB lb p (ValArr' a  ts) (ValArr' Id os)
@@ -309,6 +324,17 @@ write :: Elt e => Array sh1 e -> Array sh2 e -> Int -> Int -> IO ()
 write (Array _ from) (Array _ to) inoff outoff = do
   res <- unsafeReadArrayData from inoff
   unsafeWriteArrayData to outoff res
+
+copy :: ValArr' a -> ValArr' a -> IO ()
+copy (ValArr' (Skip x) (PushEnv y _)) z = copy (ValArr' x y) z
+copy x (ValArr' (Skip y) (PushEnv z _)) = copy x (ValArr' y z)
+copy (ValArr' ti@Fn{} i) (ValArr' to@Fn{} o)
+  | (Fn 0 f :: Transform (a, Array sh e) (b, Array sh'  e)) <- ti
+  , (Fn 0 g :: Transform (c, Array sh e) (d, Array sh'' e)) <- to
+  , Just Refl <- eqT @sh' @sh'' = undefined i o f g -- TODO copy
+  | otherwise = return () -- if the Fns are not 0, we're not in the first iteration of the loop so it will already have been copied
+copy _ _ = undefined -- TODO, figure out whether we NEED a 'copy' function, whether it needs to be a computational waste (can we copy arrays, or does it need to be elementwise), and if it can be done array-wise, is the above attempt good enough?
+
 
 evalLB' :: LoopBody' pinputs (Array sh1 e1) (Array sh2 e2)
         -> Int -- offset input  index
@@ -413,9 +439,10 @@ fuseHorizontal (Before part b lb ir1) ir2 aa' aa'' bb' bb'' = case weakenPartiti
     Before (Partition t1 t2) b (Weak (Partition aa'  mkSkips) trivialPartition lb) (fuseHorizontal ir1 ir2 t3 (compose t1 aa'') bb' bb'')
 fuseHorizontal ir1 (Before part b lb ir2) aa' aa'' bb' bb'' = case weakenPartition part aa'' Id of
   Exists' (PartitionW (Partition t1 t2) t3) ->
-    Before (Partition t1 t2) b (Weak (Partition aa'' mkSkips) trivialPartition lb) (fuseHorizontal ir1 ir2 (compose t1 aa') t3 bb' bb'')
--- fuseHorizontal (After part b ir1 lb) ir2 aa' aa'' bb' bb'' = case weakenPartition part aa' Id of
---   Exists' (PartitionW (Partition t1 t2) t3) -> undefined --TODO WRITE
+    Before (Partition t1 t2) b (Weak (Partition aa'' mkSkips) trivialPartition lb) (fuseHorizontal ir1 ir2 (compose t1 aa')  t3 bb' bb'')
+fuseHorizontal (After part b ir1 lb) ir2 aa' aa'' bb' bb'' = After _ (unsafePerformIO makeTemp) (fuseHorizontal ir1 ir2 aa' aa'' _ _) (Weak _ _ lb)
+  --case weakenPartition part aa' Id of
+--   Exists' (PartitionW (Partition t1 t2) t3) -> undefined
 fuseHorizontal _ _ _ _ _ _ = undefined
 
 data PartitionW a b ab a' b' ab' = PartitionW (Partition a' b' ab') (Transform ab ab')

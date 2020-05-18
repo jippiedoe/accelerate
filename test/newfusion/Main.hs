@@ -34,15 +34,15 @@ main = test
 
 -- -- like above, but with a zipWith at the top level to fuse ys1 and ys2
 -- normalise2' :: A.Acc (A.Array A.DIM1 Int)
--- normalise2' = A.zipWith (*) ys1 ys2 where             -- 10 [1]
+-- normalise2' = A.zipWith (*) ys1 ys2 where
 --   xs, scn, ys1, ys2 :: A.Acc (A.Array A.DIM1 Int)
 --   sum1, sum2 :: A.Acc (A.Array A.DIM0 Int)
---   xs = A.use $ A.fromList (A.Z A.:. 30) [4..]        -- 2  [0]
---   sum1 = A.fold (+) 0 xs                              -- 3  [0]
---   scn = A.scanl (+) 0 xs                              -- 6  [0]
---   sum2 = A.fold (+) 0 scn                             -- 7  [0]
---   ys1 = A.map (`A.div` (sum1 A.! A.constant A.Z)) xs  -- 4  [1]
---   ys2 = A.map (`A.div` (sum2 A.! A.constant A.Z)) xs  -- 8  [1]
+--   xs = A.use $ A.fromList (A.Z A.:. 30) [4..]
+--   sum1 = A.fold (+) 0 xs
+--   scn = A.scanl (+) 0 xs
+--   sum2 = A.fold (+) 0 scn
+--   ys1 = A.map (`A.div` (sum1 A.! A.constant A.Z)) xs
+--   ys2 = A.map (`A.div` (sum2 A.! A.constant A.Z)) xs
 
 
 -- {-

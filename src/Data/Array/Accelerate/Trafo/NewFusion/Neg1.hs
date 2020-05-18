@@ -13,6 +13,9 @@ import Data.Array.Accelerate.Array.Sugar
 import Data.Array.Accelerate.Type
 import Data.Typeable
 
+
+
+
 data Neg1 = Neg1 deriving (Show, Typeable)
 instance ArrayElt Neg1 where
   type ArrayPtrs Neg1 = Neg1
