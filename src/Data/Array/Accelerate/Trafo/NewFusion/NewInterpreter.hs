@@ -169,7 +169,7 @@ data LoopBody permIn tempIn out fusein fuseout where
        => Array sh e
        -> IORef Int
        -> LoopBody pin a b fin fout
-       -> LoopBody pin a (b, Array DIM0 e) fin fout
+       -> LoopBody pin a (b, Scalar e) fin fout
   Take :: (Shapeish sh1, Shapeish sh2, Elt a, Elt b, Typeable d)
        => LoopBody' pin (Array sh1 a) (Array sh2 b)
        -> LoopBody  pin c d fin fout
@@ -188,36 +188,20 @@ data LoopBody' permIn tempIn out where
   OneToOne :: (Elt a, Elt b)
            => IORef s
            -> (ValArr pin -> a -> State s b)
-           -> LoopBody' pin (Array DIM0 a) (Array DIM0 b)
+           -> LoopBody' pin (Scalar a) (Scalar b)
   ManyToOne :: (Elt a, Elt b)
             => IORef (s, Int)
             -> Int -- in size
             -> (ValArr pin -> a -> State s ())
             -> State s b
-            -> LoopBody' pin (Array DIM0 a) (Array Neg1 b)
+            -> LoopBody' pin (Scalar a) (Array Neg1 b)
   OneToMany :: (Elt a, Elt b)
             => IORef (s, [b], Int)
             -> Int -- out size
             -> (ValArr pin -> a -> State s [b])
-            -> LoopBody' pin (Array Neg1 a) (Array DIM0 b)
+            -> LoopBody' pin (Array Neg1 a) (Scalar b)
 
 
--- Represents the first part of normalise2', consisting of: xs, sum1, scn, and sum2.
-testIR1 :: IO (IntermediateRep () () ((((), Array DIM1 Int), Array DIM0 Int), Array DIM0 Int))
-testIR1 = do
-  xs   <- newIORef 0 >>= \ref -> return $
-    Use (fromList (Z:.30) [4..] :: Array DIM1 Int) ref Base
-  sum1 <- newIORef (0, 0) >>= \ref -> return $
-    Take (ManyToOne ref 30 (const $ modify . (+)) get) Base
-  sum2 <- newIORef (0, 0) >>= \ref -> return $ Weaken (Fn 0 (Skip Id) :: Transform ((), Array DIM0 Int) (((), Array DIM0 Int), Array DIM0 Int)) $ Simple $
-    Take (ManyToOne ref 30 (const $ modify . (+)) get) Base
-  scn  <- newIORef 0      >>= \ref -> return $
-    Take (OneToOne ref (const $ \a -> modify (+a) >> get)) Base
-  temp <- PushEnv EmptyEnv . Array (fromElt Z) <$> newArrayData 1
-  let sum2scn = Before (Partition (Skip Id) (Fn 0 (Skip Id))) temp scn sum2
-  let sum1sum2scn = Besides (Partition (Skip Id :: Transform ((), Array Neg1 Int) (((), Array Neg1 Int), Array Neg1 Int)) (Fn 0 (Skip Id))) sum1 sum2scn
-  let inner = Before' (Partition (Skip Id) Id) (Partition (Skip (Skip Id)) (Fn 0 (Fn 0 (Skip Id)))) xs sum1sum2scn :: IntermediateRep () () ((((), Array DIM0 Int), Array Neg1 Int), Array Neg1 Int)
-  return $ For inner 30 Id (Fn 0 (Fn 0 (Fn 1 Id)))
 
 test :: IO ()
 test = do
@@ -372,13 +356,52 @@ evalLB' (OneToMany sref n f) inoff outoff p (Array _ a) (Array _ b) = do
 
 
 
+-- Represents the first part of normalise2', consisting of: xs, sum1, scn, and sum2.
+testIR1 :: IO (IntermediateRep () () ((((), Vector Int), Scalar Int), Scalar Int))
+testIR1 = do
+  xs   <- newIORef 0 >>= \ref -> return $
+    Use (fromList (Z:.30) [4..] :: Vector Int) ref Base
+  sum1 <- newIORef (0, 0) >>= \ref -> return $
+    Take (ManyToOne ref 30 (const $ modify . (+)) get) Base
+  sum2 <- newIORef (0, 0) >>= \ref -> return $ Weaken (Fn 0 (Skip Id) :: Transform ((), Scalar Int) (((), Scalar Int), Scalar Int)) $ Simple $
+    Take (ManyToOne ref 30 (const $ modify . (+)) get) Base
+  scn  <- newIORef 0      >>= \ref -> return $
+    Take (OneToOne ref (const $ \a -> modify (+a) >> get)) Base
+  temp <- PushEnv EmptyEnv . Array (fromElt Z) <$> newArrayData 1
+  let sum2scn = Before (Partition (Skip Id) (Fn 0 (Skip Id))) temp scn sum2
+  let sum1sum2scn = Besides (Partition (Skip Id :: Transform ((), Array Neg1 Int) (((), Array Neg1 Int), Array Neg1 Int)) (Fn 0 (Skip Id))) sum1 sum2scn
+  let inner = Before' (Partition (Skip Id) Id) (Partition (Skip (Skip Id)) (Fn 0 (Fn 0 (Skip Id)))) xs sum1sum2scn :: IntermediateRep () () ((((), Scalar Int), Array Neg1 Int), Array Neg1 Int)
+  return $ For inner 30 Id (Fn 0 (Fn 0 (Fn 1 Id)))
+
+testIR2 :: IO (IntermediateRep ((), Vector Int) () ((((), Vector Int), Scalar Int), Scalar Int))
+testIR2 = fuseDiagonal <$>
+            xs <*>
+            (fuseHorizontal' <$>
+              sum1 <*>
+              join (fuseVertical <$>
+                scn <*>
+                sum2))
+  where
+    xs :: IO (IntermediateRep ((), Vector Int) () ((), Vector Int))
+    xs = _
+    sum1, sum2 :: IO (IntermediateRep ((), Vector Int) ((), Vector Int) ((), Scalar Int))
+    sum1 = newIORef (0, 0) >>= \ref -> return $
+      For (Simple $ Take (ManyToOne ref 30 (const $ modify . (+)) get) Base) 30 trans1 trans2
+    sum2 = sum1
+    scn :: IO (IntermediateRep ((), Vector Int) ((), Vector Int) ((), Vector Int))
+    scn = newIORef 0 >>= \ref -> return $
+      For (Simple $ Take (OneToOne ref (\_ a -> modify (+a) >> get)) Base) 30 trans1 trans1
+    trans1 :: Transform ((), Scalar Int) ((), Vector Int)
+    trans1 = Fn 1 Id
+    trans2 :: Transform ((), Array Neg1 Int) ((), Scalar Int)
+    trans2 = Fn 0 Id
 
 
 -- The part below is an attempt at fusing arbitrary (fuseable) IRs, but it still needs some work
 
 -- represents the first part of normalise2', consisting of: xs, sum1, scn, and sum2.
 -- the second part (TODO) would consist of the rest: ys1, ys2 and the zipwith
-testIR1' :: IO (IntermediateRep () () ((((), Array DIM1 Int), Array DIM0 Int), Array DIM0 Int))
+testIR1' :: IO (IntermediateRep () () ((((), Vector Int), Scalar Int), Scalar Int))
 testIR1' = fuseDiagonal <$>
             xs <*>
             (fuseHorizontal' <$>
@@ -387,20 +410,20 @@ testIR1' = fuseDiagonal <$>
                 scn <*>
                 sum2))
   where
-    xs :: IO (IntermediateRep () () ((), Array DIM1 Int))
+    xs :: IO (IntermediateRep () () ((), Vector Int))
     xs = newIORef 0 >>= \ref -> return $
-      For (Simple $ Use (fromList (Z:.30) [4..] :: Array DIM1 Int) ref Base) 30 Id trans
-    sum1, sum2 :: IO (IntermediateRep () ((), Array DIM1 Int) ((), Array DIM0 Int))
+      For (Simple $ Use (fromList (Z:.30) [4..] :: Vector Int) ref Base) 30 Id trans1
+    sum1, sum2 :: IO (IntermediateRep () ((), Vector Int) ((), Scalar Int))
     sum1 = newIORef (0, 0) >>= \ref -> return $
-      For (Simple $ Take (ManyToOne ref 30 (const $ modify . (+)) get) Base) 30 trans trans'
+      For (Simple $ Take (ManyToOne ref 30 (const $ modify . (+)) get) Base) 30 trans1 trans2
     sum2 = sum1
-    scn :: IO (IntermediateRep () ((), Array DIM1 Int) ((), Array DIM1 Int))
+    scn :: IO (IntermediateRep () ((), Vector Int) ((), Vector Int))
     scn = newIORef 0 >>= \ref -> return $
-      For (Simple $ Take (OneToOne ref (const $ \a -> modify (+a) >> get)) Base) 30 trans trans
-    trans :: Transform ((), Array DIM0 Int) ((), Array DIM1 Int)
-    trans = Fn 1 Id
-    trans' :: Transform ((), Array Neg1 Int) ((), Array DIM0 Int)
-    trans' = Fn 0 Id
+      For (Simple $ Take (OneToOne ref (const $ \a -> modify (+a) >> get)) Base) 30 trans1 trans1
+    trans1 :: Transform ((), Scalar Int) ((), Vector Int)
+    trans1 = Fn 1 Id
+    trans2 :: Transform ((), Array Neg1 Int) ((), Scalar Int)
+    trans2 = Fn 0 Id
 
 fuseHorizontal' :: forall p a b b' c c'. (Typeable a, Shapeish b, Shapeish c, Elt b', Elt c')
                 => IntermediateRep p a ((),  Array b b')
@@ -440,7 +463,7 @@ fuseHorizontal (Before part b lb ir1) ir2 aa' aa'' bb' bb'' = case weakenPartiti
 fuseHorizontal ir1 (Before part b lb ir2) aa' aa'' bb' bb'' = case weakenPartition part aa'' Id of
   Exists' (PartitionW (Partition t1 t2) t3) ->
     Before (Partition t1 t2) b (Weak (Partition aa'' mkSkips) trivialPartition lb) (fuseHorizontal ir1 ir2 (compose t1 aa')  t3 bb' bb'')
-fuseHorizontal (After part b ir1 lb) ir2 aa' aa'' bb' bb'' = After _ (unsafePerformIO makeTemp) (fuseHorizontal ir1 ir2 aa' aa'' _ _) (Weak _ _ lb)
+-- fuseHorizontal (After part b ir1 lb) ir2 aa' aa'' bb' bb'' = After _ (unsafePerformIO makeTemp) (fuseHorizontal ir1 ir2 aa' aa'' _ _) (Weak _ _ lb)
   --case weakenPartition part aa' Id of
 --   Exists' (PartitionW (Partition t1 t2) t3) -> undefined
 fuseHorizontal _ _ _ _ _ _ = undefined
@@ -562,7 +585,7 @@ data LBTransform a b ab = LBT (Transform a ab) (Transform b ab)
 --   _ -> undefined
 -- mkLBTransforms (Weak t@(Fn 0 _) (Use (_ :: Array sh e) _ lb)) = case mkLBTransforms (Weak t lb) of
 --   Exists' (LBT a b :: LBTransform a b ab) ->
---     Exists' $ LBT (Skip a) (Fn 0 b :: Transform (b, Array DIM0 e) (ab, Array DIM0 e))
+--     Exists' $ LBT (Skip a) (Fn 0 b :: Transform (b, Scalar e) (ab, Scalar e))
 -- mkLBTransforms (Weak f'@(Fn 0 _) (Take (_ :: LoopBody' p (Array sh1 e1) (Array sh2 e2)) lb)) =
 --   case f' of
 --   (Fn 0 f :: Transform (from, Array sh1' e1') (to, Array sh e)) ->

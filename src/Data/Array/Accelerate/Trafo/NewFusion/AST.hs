@@ -60,31 +60,31 @@ type FusedOpenFun  = PreOpenFun  FusedOpenAcc
 -- This guarantees that the fused tree is consistent with itself.
 data Numerousness = Single | Multiple
 data PreFusedOpenAcc (n :: Numerousness) aenv a where
-  RootOfFusionTree :: PreFusedOpenAcc Single   aenv a
-                   -> PreFusedOpenAcc Multiple aenv a
+  RootOfCluster :: PreFusedOpenAcc Single   aenv a
+                -> PreFusedOpenAcc Multiple aenv a
 
-  Unfused          :: AST.PreOpenAcc (PreFusedOpenAcc Multiple) aenv a
-                   -> PreFusedOpenAcc Multiple                  aenv a
+  Unfused       :: AST.PreOpenAcc (PreFusedOpenAcc Multiple) aenv a
+                -> PreFusedOpenAcc Multiple                  aenv a
 
-  LeafOfFusionTree :: AST.OpenAcc            aenv a
-                   -> PreFusedOpenAcc Single aenv a
+  LeafOfCluster :: AST.OpenAcc            aenv a
+                -> PreFusedOpenAcc Single aenv a
 
-  Vertical         ::
-    { lhsV         :: LeftHandSide a aenv benv
-    , innerV       :: PreFusedOpenAcc Single aenv a
-    , outerV       :: PreFusedOpenAcc Single benv b
-    }              -> PreFusedOpenAcc Single aenv b
+  Vertical      ::
+    { lhsV      :: LeftHandSide a aenv benv
+    , innerV    :: PreFusedOpenAcc Single aenv a
+    , outerV    :: PreFusedOpenAcc Single benv b
+    }           -> PreFusedOpenAcc Single aenv b
 
-  Horizontal       ::
-    { leftH        :: PreFusedOpenAcc Single aenv  a
-    , rightH       :: PreFusedOpenAcc Single aenv    b
-    }              -> PreFusedOpenAcc Single aenv (a,b)
+  Horizontal    ::
+    { leftH     :: PreFusedOpenAcc Single aenv  a
+    , rightH    :: PreFusedOpenAcc Single aenv    b
+    }           -> PreFusedOpenAcc Single aenv (a,b)
 
-  Diagonal         ::
-    { lhsD         :: LeftHandSide a aenv benv
-    , firstD       :: PreFusedOpenAcc Single aenv  a
-    , secondD      :: PreFusedOpenAcc Single benv    b
-    }              -> PreFusedOpenAcc Single aenv (a,b)
+  Diagonal      ::
+    { lhsD      :: LeftHandSide a aenv benv
+    , firstD    :: PreFusedOpenAcc Single aenv  a
+    , secondD   :: PreFusedOpenAcc Single benv    b
+    }           -> PreFusedOpenAcc Single aenv (a,b)
 
 
 
