@@ -2,9 +2,8 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE AllowAmbiguousTypes    #-}
--- {-# LANGUAGE IncoherentInstances    #-}
 
-{-# OPTIONS_GHC -fno-warn-missing-methods #-}
+{-# OPTIONS_GHC -fno-warn-missing-methods #-}-- making Neg1 an instance of these typeclasses is, in some cases, an ugly hack and not meaningful. You should never have an array element of type Neg1
 {-# OPTIONS_GHC -fno-warn-unused-top-binds #-}
 module Data.Array.Accelerate.Trafo.NewFusion.Neg1 where
 
