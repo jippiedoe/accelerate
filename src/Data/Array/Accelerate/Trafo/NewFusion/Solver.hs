@@ -6,6 +6,14 @@
 {-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE TypeOperators         #-}
 
+-- TODO there's some constructors (notably the control flow like ifs and whiles) that don't have an acyclic structure.
+-- Currently, those generate some cyclic constraints. For 'if' that `might` be allright, but probably undesireable,
+-- but for 'while' it's really not good enough... Instead, we should create multiple ILPs and solve them independantly.
+-- it's possible to combine them into one big ILP, of course, but then you'd rely really heavily on the solver to realise
+-- the independence (reminder: ILP is NP-complete, so fusing two ILPs could be terrible)
+
+-- TL;DR: solve control flow by making multiple ILPs, it's more accurate AND probably faster AND not that hard to do, right?
+
 module Data.Array.Accelerate.Trafo.NewFusion.Solver
   ( makeGraph
   , DirectedAcyclicGraph(..)
@@ -97,7 +105,7 @@ makeGraph (LabelledOpenAcc acc) env dag = case acc of
     let dagE = makeGraphE e env dag n
         dagF = makeGraphF f env dagE n
         dagG = makeGraphF g env dagF n
-    in  (n, dagG { nodes = (n, MapT (getNodeId env x)) $: nodes dagG })
+    in  (n, dagG { nodes = (n, BackpermuteT (getNodeId env x)) $: nodes dagG })
   Replicate n _ e x -> -- TODO make a replicateT, which is less restrictive than backpermuteT
     let dagE = makeGraphE e env dag n
     in  (n, dagE { nodes = (n, BackpermuteT (getNodeId env x)) $: nodes dagE })

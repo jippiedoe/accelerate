@@ -10,6 +10,7 @@
 {-# LANGUAGE UndecidableInstances   #-}
 {-# LANGUAGE PolyKinds              #-}
 {-# LANGUAGE StandaloneDeriving     #-}
+{-# LANGUAGE EmptyCase     #-}
 {-# LANGUAGE TypeApplications #-}
 
 {-# OPTIONS_GHC -fno-warn-unused-top-binds #-} -- TODO remove
@@ -33,6 +34,24 @@ import Control.Monad.State.Strict
 import Data.Foldable
 import Data.Array.Accelerate.Trafo.NewFusion.Neg1
 
+
+
+-- xs :: IntermediateRep ((), Vector Int) () ((), Vector Int)
+-- xs = _ --TODO, rewrite example
+
+-- sum1 :: IntermediateRep ((), Vector Int) ((), Vector Int) ((), Scalar Int)
+-- sum1 = For (Simple $ Take (ManyToOne (const $ modify . (+)) get) Base) t1 t2
+
+-- scn :: IntermediateRep ((), Vector Int) ((), Vector Int) ((), Vector Int)
+-- scn = For (Simple $ Take (OneToOne (\_ a -> modify (+a) >> get)) Base) t1 t1
+
+-- sum2 :: IntermediateRep ((), Vector Int) ((), Vector Int) ((), Scalar Int)
+-- sum2 = sum1
+
+-- t1 :: Transform ((), Scalar Int) ((), Vector Int)
+-- t1 = Fn 1 Id
+-- t2 :: Transform ((), Array Neg1 Int) ((), Scalar Int)
+-- t2 = Fn 0 Id
 
 
 class Environment env where
@@ -64,6 +83,17 @@ data ValArr' env where
           -> ValArr env'
           -> ValArr' env
 deriving instance Show (ValArr' a)
+
+prj :: Idx env (Array sh e) -> ValArr env -> Array sh e
+prj ZeroIdx (PushEnv _ v) = v
+prj (SuccIdx idx) (PushEnv val _) = prj idx val
+
+prj' :: Idx env (Array sh e) -> ValArr' env -> Array' e
+prj' ZeroIdx (ValArr' (Fun i _) (PushEnv _ v)) = Array' i v
+prj' (SuccIdx idx) (ValArr' (Fun _ tr) (PushEnv e _)) = prj' idx (ValArr' tr e)
+prj' idx (ValArr' (Skp tr) (PushEnv e _)) = prj' idx (ValArr' tr e)
+prj' idx (ValArr' Unt EmptyEnv) = case idx of {} -- no Idx possible, this convinces GHC
+
 
 transform' :: Environment b => ValArr' a -> Transform b a -> ValArr' b
 transform' (ValArr' x y) tr = ValArr' (x . tr) y
@@ -164,21 +194,39 @@ data IntermediateRep perm temp input out where
   -- Vertical
   -- the LoopBody has 'type' (i -> x), and the IR has 'type' ((i,x) -> o)
   Before :: (Environment p, Environment t, Environment i, Environment o, Shapeish sh, Elt x)
-         => Transform (i, Array sh x) t
-         -> LoopBody p t i ((), Array sh x)
-         -> IntermediateRep p t (i, Array sh x) o -- having to reorder the env to have 'x' on top might cause issues
+         => Transform x t
+         -> LoopBody p t i x
+         -> IntermediateRep p t x o
          -> IntermediateRep p t i o
 
-
+  After :: (Environment p, Environment t, Environment i, Environment o, Shapeish sh, Elt x)
+        => Transform x t
+        -> IntermediateRep p t i x
+        -> LoopBody p t x o
+        -> IntermediateRep p t i o
 
 data LoopBody perm temp input out where
-  LoopBody :: Idx ienv (Array sh i)
-           -> Idx oenv (Array sh o)
-           -> LoopBody' p (Array sh i) (Array sh o)
-           -> LoopBody p t ienv oenv
+  LB :: Partition i o t
+     -> LoopBody'' p t i o
+     -> LoopBody p t i o
+
+data LoopBody'' perm temp input out where
+  InOut :: (Shapeish sh1, Shapeish sh2, Elt i, Elt o, Environment ienv, Environment oenv)
+        => Idx ienv (Array sh1 i)
+        -> Idx oenv (Array sh2 o)
+        -> LoopBody' p (Array sh1 i) (Array sh2 o)
+        -> LoopBody'' p t ienv oenv
+  InInOut :: (Shapeish sh1, Shapeish sh2, Elt i, Elt o, Environment ienv, Environment oenv)
+          => Idx ienv (Array sh1 i1)
+          -> Idx ienv (Array sh2 i2)
+          -> Idx oenv (Array sh3 o)
+          -> LoopBody2 p (Array sh1 i) (Array sh2 i2) (Array sh3 o)
+          -> LoopBody'' p t ienv oenv
+
 
 -- The 'State s' requirements allow functions to keep track of their running index into the permIn, which doesn't have idxtransforms
 -- It also helps write Scans as 'OneToOne', and is essential to writing any meaningful (such as fold-like) 'ManyToOne'.
+-- .. in other words, it's the cheat that makes these `parallel loops' sequential after all. This is the part that only works in the interpreter!
 data LoopBody' permIn tempIn out where
   OneToOne :: (Elt a, Elt b)
            => IORef s
@@ -196,47 +244,42 @@ data LoopBody' permIn tempIn out where
             -> (ValArr pin -> a -> State s [b])
             -> LoopBody' pin (Array Neg1 a) (Scalar b)
 
+data LoopBody2 p i1 i2 o -- zips
 
+-- fuseHorizontal :: Partition oL oR o
+--                -> IntermediateRep p t i oL
+--                -> IntermediateRep p t i oR
+--                -> IntermediateRep p t i o
 
--- test :: IO ()
--- test = do
---   ir <- testIR1
---   a <- Array (fromElt Z) <$> newArrayData 1
---   b <- Array (fromElt Z) <$> newArrayData 1
---   c <- Array (fromElt $ Z:.(30 :: Int)) <$> newArrayData 30
---   let output = PushEnv (PushEnv (PushEnv EmptyEnv c) b) a
---   evalIR ir EmptyEnv output
---   print output
+fuseVertical :: Partition i x ix
+             -> IntermediateRep p t i  x
+             -> IntermediateRep p t ix o
+             -> IntermediateRep p t' i  o -- new t, TODO make existential wrapper
+fuseVertical = undefined
 
 
 evalIR :: (Environment p, Environment t, Environment i, Environment o) =>
           IntermediateRep p t i o
        -> ValArr p
        -> ValArr t
-       -> Partition i o t
+       -> Transform i i'
+       -> Transform o o'
        -> IO ()
-evalIR (For ii' oo' n ir) p t (Partition it ot) =
+evalIR (For ii' oo' n ir) p t ii oo =
   (`traverse_` [0..n-1]) $ \i ->
-    evalIR ir p t (Partition (it . (i $* ii')) (ot . (i $* oo')))
-evalIR (Simple lb)       p t iot = evalLB lb p t iot
-evalIR (Before ixt lb ir) p t (Partition it ot) =
+    evalIR ir p t (ii . (i $* ii')) ((i $* oo') . oo)
+evalIR (Simple lb)       p t ii oo = evalLB lb p t iot
+evalIR (Before ixt lb ir) p t ii oo =
   evalLB lb p t (Partition it (onlyFirst ixt)) >> evalIR ir p t (Partition ixt ot)
 
 
-evalLB :: LoopBody p t i o
-       -> ValArr p
-       -> ValArr t
-       -> Partition i o t
-       -> IO ()
-evalLB (LoopBody idxI idxO lb') p t (Partition trI trO) =
-  evalLB'2 lb' p (helper (ValArr' trI t) idxI)
-                 (helper (ValArr' trO t) idxO)
-  where
-    helper :: ValArr' env -> Idx env (Array sh a) -> Array' a
-    helper (ValArr' (Fun i  _) (PushEnv _ x)) ZeroIdx = Array' i x
-    helper (ValArr' (Fun _ tr) (PushEnv e _)) (SuccIdx idx) = helper (ValArr' tr e) idx
-    helper _ _ = undefined -- TODO
-
+evalLB'' :: LoopBody'' p t i o
+         -> ValArr p
+         -> ValArr t
+         -> Partition i o t
+         -> IO ()
+evalLB'' (InOut idxi idxo lb') p t (Partition trI trO) = undefined
+  -- evalLB'2 lb' p (prj' ZeroIdx (ValArr' trI t)) (prj' ZeroIdx (ValArr' trO t))
 
 
 -- eventually, rewrite evalLB' to have this type. For now, this works
@@ -246,9 +289,6 @@ evalLB'2 :: LoopBody' p (Array sh1 e1) (Array sh2 e2)
          -> Array' e2
          -> IO ()
 evalLB'2 lb' p (Array' i a1) (Array' j a2) = evalLB' lb' i j p a1 a2
-
-
-
 
 evalLB' :: LoopBody' pinputs (Array sh1 e1) (Array sh2 e2)
         -> Int -- offset input  index
