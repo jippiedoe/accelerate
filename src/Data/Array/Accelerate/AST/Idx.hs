@@ -24,7 +24,7 @@
 
 module Data.Array.Accelerate.AST.Idx (
 
-  Idx, pattern ZeroIdx, pattern SuccIdx, pattern VoidIdx,
+  Idx(ZeroIdx, SuccIdx, VoidIdx), -- This notation allows importing `Idx(..)` to get the patterns
   idxToInt,
   rnfIdx, liftIdx,
 

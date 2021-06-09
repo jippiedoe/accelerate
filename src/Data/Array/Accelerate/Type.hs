@@ -1,3 +1,5 @@
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE ConstraintKinds     #-}
@@ -81,6 +83,8 @@ import Text.Printf
 
 import GHC.Prim
 import GHC.TypeLits
+import Data.Bifunctor (first)
+import Unsafe.Coerce (unsafeCoerce)
 
 
 -- Scalar types
@@ -108,47 +112,123 @@ data FloatingDict a where
 
 -- | Integral types supported in array computations.
 --
-data IntegralType a where
-  TypeInt     :: IntegralType Int
-  TypeInt8    :: IntegralType Int8
-  TypeInt16   :: IntegralType Int16
-  TypeInt32   :: IntegralType Int32
-  TypeInt64   :: IntegralType Int64
-  TypeWord    :: IntegralType Word
-  TypeWord8   :: IntegralType Word8
-  TypeWord16  :: IntegralType Word16
-  TypeWord32  :: IntegralType Word32
-  TypeWord64  :: IntegralType Word64
+-- data IntegralType a where -- 0 - 9
+--   TypeInt     :: IntegralType Int
+--   TypeInt8    :: IntegralType Int8
+--   TypeInt16   :: IntegralType Int16
+--   TypeInt32   :: IntegralType Int32
+--   TypeInt64   :: IntegralType Int64
+--   TypeWord    :: IntegralType Word
+--   TypeWord8   :: IntegralType Word8
+--   TypeWord16  :: IntegralType Word16
+--   TypeWord32  :: IntegralType Word32
+--   TypeWord64  :: IntegralType Word64
+
+newtype IntegralType a = UnsafeIType { runUnsafeIType :: Int }
+{-# COMPLETE TypeInt, TypeInt8, TypeInt16, TypeInt32, TypeInt64, TypeWord, TypeWord8, TypeWord16, TypeWord32, TypeWord64 #-}
+pattern TypeInt    :: forall a. () => (a ~ Int)    => IntegralType a
+pattern TypeInt    <- ((, unsafeCoerce @_ @(a :~: Int)    Refl) . runUnsafeIType -> (0, Refl))
+  where TypeInt    = UnsafeIType 0
+pattern TypeInt8   :: forall a. () => (a ~ Int8)   => IntegralType a
+pattern TypeInt8   <- ((, unsafeCoerce @_ @(a :~: Int8)   Refl) . runUnsafeIType -> (1, Refl))
+  where TypeInt8   = UnsafeIType 1
+pattern TypeInt16  :: forall a. () => (a ~ Int16)  => IntegralType a
+pattern TypeInt16  <- ((, unsafeCoerce @_ @(a :~: Int16)  Refl) . runUnsafeIType -> (2, Refl))
+  where TypeInt16  = UnsafeIType 2
+pattern TypeInt32  :: forall a. () => (a ~ Int32)  => IntegralType a
+pattern TypeInt32  <- ((, unsafeCoerce @_ @(a :~: Int32)  Refl) . runUnsafeIType -> (3, Refl))
+  where TypeInt32  = UnsafeIType 3
+pattern TypeInt64  :: forall a. () => (a ~ Int64)  => IntegralType a
+pattern TypeInt64  <- ((, unsafeCoerce @_ @(a :~: Int64)  Refl) . runUnsafeIType -> (4, Refl))
+  where TypeInt64  = UnsafeIType 4
+pattern TypeWord   :: forall a. () => (a ~ Word)   => IntegralType a
+pattern TypeWord   <- ((, unsafeCoerce @_ @(a :~: Word)   Refl) . runUnsafeIType -> (5, Refl))
+  where TypeWord   = UnsafeIType 5
+pattern TypeWord8  :: forall a. () => (a ~ Word8)  => IntegralType a
+pattern TypeWord8  <- ((, unsafeCoerce @_ @(a :~: Word8)  Refl) . runUnsafeIType -> (6, Refl))
+  where TypeWord8  = UnsafeIType 6
+pattern TypeWord16 :: forall a. () => (a ~ Word16) => IntegralType a
+pattern TypeWord16 <- ((, unsafeCoerce @_ @(a :~: Word16) Refl) . runUnsafeIType -> (7, Refl))
+  where TypeWord16 = UnsafeIType 7
+pattern TypeWord32 :: forall a. () => (a ~ Word32) => IntegralType a
+pattern TypeWord32 <- ((, unsafeCoerce @_ @(a :~: Word32) Refl) . runUnsafeIType -> (8, Refl))
+  where TypeWord32 = UnsafeIType 8
+pattern TypeWord64 :: forall a. () => (a ~ Word64) => IntegralType a
+pattern TypeWord64 <- ((, unsafeCoerce @_ @(a :~: Word64) Refl) . runUnsafeIType -> (9, Refl))
+  where TypeWord64 = UnsafeIType 9
 
 -- | Floating-point types supported in array computations.
 --
-data FloatingType a where
-  TypeHalf    :: FloatingType Half
-  TypeFloat   :: FloatingType Float
-  TypeDouble  :: FloatingType Double
+-- data FloatingType a where -- 10 - 12
+--   TypeHalf    :: FloatingType Half
+--   TypeFloat   :: FloatingType Float
+--   TypeDouble  :: FloatingType Double
+
+newtype FloatingType a =  UnsafeFType { runUnsafeFType :: Int }
+{-# COMPLETE TypeHalf, TypeFloat, TypeDouble #-}
+pattern TypeHalf   :: forall a. () => (a ~ Half)   => FloatingType a
+pattern TypeHalf   <- ((, unsafeCoerce @_ @(a :~: Half)   Refl) . runUnsafeFType -> (10, Refl))
+  where TypeHalf = UnsafeFType 10
+pattern TypeFloat  :: forall a. () => (a ~ Float)  => FloatingType a
+pattern TypeFloat  <- ((, unsafeCoerce @_ @(a :~: Float)  Refl) . runUnsafeFType -> (11, Refl))
+  where TypeFloat = UnsafeFType 11
+pattern TypeDouble :: forall a. () => (a ~ Double) => FloatingType a
+pattern TypeDouble <- ((, unsafeCoerce @_ @(a :~: Double) Refl) . runUnsafeFType -> (12, Refl))
+  where TypeDouble = UnsafeFType 12
+
 
 -- | Numeric element types implement Num & Real
 --
-data NumType a where
-  IntegralNumType :: IntegralType a -> NumType a
-  FloatingNumType :: FloatingType a -> NumType a
+-- data NumType a where -- 0 - 12
+--   IntegralNumType :: IntegralType a -> NumType a -- 0 - 9
+--   FloatingNumType :: FloatingType a -> NumType a -- 10 - 12
+
+newtype NumType a = UnsafeNType { runUnsafeNType :: Int}
+{-# COMPLETE IntegralNumType, FloatingNumType #-}
+pattern IntegralNumType :: IntegralType a -> NumType a
+pattern IntegralNumType x <- (between 0 9 UnsafeIType . runUnsafeNType -> Just x)
+  where IntegralNumType (UnsafeIType x) = UnsafeNType x
+pattern FloatingNumType :: FloatingType a -> NumType a
+pattern FloatingNumType x <- (between 10 12 UnsafeFType . runUnsafeNType -> Just x)
+  where FloatingNumType (UnsafeFType x) = UnsafeNType x
 
 -- | Bounded element types implement Bounded
 --
-data BoundedType a where
-  IntegralBoundedType :: IntegralType a -> BoundedType a
+newtype BoundedType a = IntegralBoundedType (IntegralType a)
 
 -- | All scalar element types implement Eq & Ord
 --
-data ScalarType a where
-  SingleScalarType :: SingleType a         -> ScalarType a
-  VectorScalarType :: VectorType (Vec n a) -> ScalarType (Vec n a)
+-- data ScalarType a where -- 0 - 25
+--   SingleScalarType :: SingleType a         -> ScalarType a -- 0 - 12
+--   VectorScalarType :: VectorType (Vec n a) -> ScalarType (Vec n a) -- 13 - 25
 
-data SingleType a where
-  NumSingleType :: NumType a -> SingleType a
+newtype ScalarType a = UnsafeSType { runUnsafeSType :: (Int, Maybe Int) }
+{-# COMPLETE SingleScalarType, VectorScalarType #-}
+pattern SingleScalarType :: SingleType a -> ScalarType a
+pattern SingleScalarType x <- (first (NumSingleType . UnsafeNType) . runUnsafeSType -> (x, Nothing))  -- ((\(UnsafeSType y, Nothing) -> NumSingleType (UnsafeNType y) -> x)) -- . NumSingleType . UnsafeNType . runUnsafeSType -> Just x)
+  where SingleScalarType (NumSingleType (UnsafeNType x)) = UnsafeSType (x, Nothing)
+pattern VectorScalarType :: forall n a b. () => (b ~ Vec n a) => VectorType (Vec n a) -> ScalarType b
+pattern VectorScalarType x <- (((, unsafeCoerce @_ @(b :~: Vec n a) Refl) . UnsafeVType @(Vec n a) <$>) . (sequence :: (Int, Maybe Int) -> Maybe (Int, Int)). runUnsafeSType -> Just (x, Refl))
+  where VectorScalarType (UnsafeVType (x, n)) = UnsafeSType (x, Just n)
 
-data VectorType a where
-  VectorType :: KnownNat n => {-# UNPACK #-} !Int -> SingleType a -> VectorType (Vec n a)
+newtype SingleType a = NumSingleType (NumType a)
+
+
+-- data VectorType a where
+--   VectorType :: KnownNat n => {-# UNPACK #-} !Int -> SingleType a -> VectorType (Vec n a) -- 13 - 25 (SingleType + 13)
+
+newtype VectorType a = UnsafeVType { runUnsafeVType :: (Int, Int) }
+{-# COMPLETE VectorType #-}
+pattern VectorType :: forall n a b. () => ({-KnownNat n, -} b ~ Vec n a) => Int -> SingleType a -> VectorType b
+pattern VectorType a b <- ((, unsafeCoerce @_ @(b :~: Vec n a) Refl) . first (NumSingleType . UnsafeNType @a) . runUnsafeVType -> ((b, a), Refl))
+  where VectorType n (NumSingleType (UnsafeNType x)) = UnsafeVType (x, n)
+
+-- For defining pattern synonyms: matches if the fourth argument is between the first two (inclusive on both ends)
+between :: Int -> Int -> (Int -> a) -> Int -> Maybe a
+between l u f x
+  | x >= l && x <= u = Just (f x)
+  | otherwise        = Nothing
+
 
 instance Show (IntegralType a) where
   show TypeInt    = "Int"
