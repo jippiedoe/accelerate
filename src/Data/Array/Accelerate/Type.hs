@@ -83,9 +83,9 @@ import Text.Printf
 
 import GHC.Prim
 import GHC.TypeLits
-import Data.Bifunctor (first)
+#ifndef ACCELERATE_INTERNAL_CHECKS
 import Unsafe.Coerce (unsafeCoerce)
-
+#endif
 
 -- Scalar types
 -- ------------
@@ -112,7 +112,7 @@ data FloatingDict a where
 
 -- | Integral types supported in array computations.
 --
--- data IntegralType a where -- 0 - 9
+-- data IntegralType a where
 --   TypeInt     :: IntegralType Int
 --   TypeInt8    :: IntegralType Int8
 --   TypeInt16   :: IntegralType Int16
@@ -186,10 +186,10 @@ pattern TypeDouble <- ((, unsafeCoerce @_ @(a :~: Double) Refl) . runUnsafeFType
 newtype NumType a = UnsafeNType { runUnsafeNType :: Int}
 {-# COMPLETE IntegralNumType, FloatingNumType #-}
 pattern IntegralNumType :: IntegralType a -> NumType a
-pattern IntegralNumType x <- (between 0 9 UnsafeIType . runUnsafeNType -> Just x)
+pattern IntegralNumType x <- (upto      9 UnsafeIType . runUnsafeNType -> Just x)
   where IntegralNumType (UnsafeIType x) = UnsafeNType x
 pattern FloatingNumType :: FloatingType a -> NumType a
-pattern FloatingNumType x <- (between 10 12 UnsafeFType . runUnsafeNType -> Just x)
+pattern FloatingNumType x <- (starting 10 UnsafeFType . runUnsafeNType -> Just x)
   where FloatingNumType (UnsafeFType x) = UnsafeNType x
 
 -- | Bounded element types implement Bounded
@@ -198,37 +198,53 @@ newtype BoundedType a = IntegralBoundedType (IntegralType a)
 
 -- | All scalar element types implement Eq & Ord
 --
--- data ScalarType a where -- 0 - 25
---   SingleScalarType :: SingleType a         -> ScalarType a -- 0 - 12
---   VectorScalarType :: VectorType (Vec n a) -> ScalarType (Vec n a) -- 13 - 25
+data ScalarType a where -- 0 - 25
+  SingleScalarType :: SingleType a         -> ScalarType a -- 0 - 12
+  VectorScalarType :: VectorType (Vec n a) -> ScalarType (Vec n a) -- 13 - 25
 
-newtype ScalarType a = UnsafeSType { runUnsafeSType :: (Int, Maybe Int) }
-{-# COMPLETE SingleScalarType, VectorScalarType #-}
-pattern SingleScalarType :: SingleType a -> ScalarType a
-pattern SingleScalarType x <- (first (NumSingleType . UnsafeNType) . runUnsafeSType -> (x, Nothing))  -- ((\(UnsafeSType y, Nothing) -> NumSingleType (UnsafeNType y) -> x)) -- . NumSingleType . UnsafeNType . runUnsafeSType -> Just x)
-  where SingleScalarType (NumSingleType (UnsafeNType x)) = UnsafeSType (x, Nothing)
-pattern VectorScalarType :: forall n a b. () => (b ~ Vec n a) => VectorType (Vec n a) -> ScalarType b
-pattern VectorScalarType x <- (((, unsafeCoerce @_ @(b :~: Vec n a) Refl) . UnsafeVType @(Vec n a) <$>) . (sequence :: (Int, Maybe Int) -> Maybe (Int, Int)). runUnsafeSType -> Just (x, Refl))
-  where VectorScalarType (UnsafeVType (x, n)) = UnsafeSType (x, Just n)
+-- newtype ScalarType a = UnsafeSType { runUnsafeSType :: (Int, Maybe (Int, SomeNat)) }
+-- {-# COMPLETE SingleScalarType, VectorScalarType #-}
+-- pattern SingleScalarType :: SingleType a -> ScalarType a
+-- pattern SingleScalarType x <- (first (NumSingleType . UnsafeNType) . runUnsafeSType -> (x, Nothing))  -- ((\(UnsafeSType y, Nothing) -> NumSingleType (UnsafeNType y) -> x)) -- . NumSingleType . UnsafeNType . runUnsafeSType -> Just x)
+--   where SingleScalarType (NumSingleType (UnsafeNType x)) = UnsafeSType (x, Nothing)
+-- pattern VectorScalarType :: forall n a b. () => (b ~ Vec n a) => VectorType (Vec n a) -> ScalarType b
+-- -- pattern VectorScalarType x <- (_ -> x)
+-- --   where VectorScalarType (VectorType n (NumSingleType (UnsafeNType x))) = (x, Just (n, SomeNat (Proxy :: Proxy n))) 
+-- pattern VectorScalarType x <- (((, unsafeCoerce @_ @(b :~: Vec n a) Refl) . UnsafeVType @(Vec n a) <$>) . sequence . runUnsafeSType -> Just (x, Refl))
+--   where VectorScalarType (UnsafeVType (x, n)) = UnsafeSType (x, Just n)
 
 newtype SingleType a = NumSingleType (NumType a)
 
 
--- data VectorType a where
---   VectorType :: KnownNat n => {-# UNPACK #-} !Int -> SingleType a -> VectorType (Vec n a) -- 13 - 25 (SingleType + 13)
+data VectorType a where
+  VectorType :: KnownNat n => {-# UNPACK #-} !Int -> SingleType a -> VectorType (Vec n a) -- 13 - 25 (SingleType + 13)
 
-newtype VectorType a = UnsafeVType { runUnsafeVType :: (Int, Int) }
-{-# COMPLETE VectorType #-}
-pattern VectorType :: forall n a b. () => ({-KnownNat n, -} b ~ Vec n a) => Int -> SingleType a -> VectorType b
-pattern VectorType a b <- ((, unsafeCoerce @_ @(b :~: Vec n a) Refl) . first (NumSingleType . UnsafeNType @a) . runUnsafeVType -> ((b, a), Refl))
-  where VectorType n (NumSingleType (UnsafeNType x)) = UnsafeVType (x, n)
+-- data VectorType a = forall n. KnownNat n => UnsafeVType (Int, (Int, Proxy n))
+-- {-# COMPLETE VectorType #-}
+-- pattern VectorType :: forall a b. () => forall n. (KnownNat n, b ~ Vec n a) => Int -> SingleType a -> VectorType b
+-- pattern VectorType a b <- (
+--       -- (\x@((_,(_,SomeNat (Proxy :: Proxy n'))),_) -> (x, unsafeCoerce @_ @(n :~: n') Refl)) 
+--       \(UnsafeVType (b', (a', p@Proxy :: Proxy n'))) ->
+--      ((NumSingleType (UnsafeNType b'), (a', p)), unsafeCoerce @_ @(b :~: Vec n' a) Refl)
+--     -- . first (NumSingleType . UnsafeNType @a) 
+--     -> ((b, (a, Proxy :: Proxy n')), Refl)
+--     )
+--   where
+--     VectorType n (NumSingleType (UnsafeNType x)) = UnsafeVType (x, (n, Proxy))
 
 -- For defining pattern synonyms: matches if the fourth argument is between the first two (inclusive on both ends)
 between :: Int -> Int -> (Int -> a) -> Int -> Maybe a
 between l u f x
   | x >= l && x <= u = Just (f x)
   | otherwise        = Nothing
-
+upto :: Int -> (Int -> a) -> Int -> Maybe a
+upto l f x
+  | x >= l     = Just (f x)
+  | otherwise  = Nothing
+starting :: Int -> (Int -> a) -> Int -> Maybe a
+starting u f x
+  | x <= u    = Just (f x)
+  | otherwise = Nothing
 
 instance Show (IntegralType a) where
   show TypeInt    = "Int"

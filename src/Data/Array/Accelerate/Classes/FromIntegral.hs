@@ -1,4 +1,5 @@
 {-# LANGUAGE ConstraintKinds       #-}
+{-# LANGUAGE CPP                   #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE MonoLocalBinds        #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -51,6 +52,20 @@ class FromIntegral a b where
 --
 $(runQ $ do
     let
+        as = [''Int, ''Int8, ''Int16, ''Int32, ''Int64, ''Word, ''Word8, ''Word16, ''Word32, ''Word64]
+        bs = as ++ [''Half, ''Float, ''Double]
+
+        thFromIntegral :: Name -> Name -> Q Dec
+        thFromIntegral a b =
+          let
+              ty  = AppT (AppT (ConT (mkName "FromIntegral")) (ConT a)) (ConT b)
+              dec = ValD (VarP (mkName "fromIntegral")) (NormalB (VarE (mkName f))) []
+              f | a == b    = "id"
+                | otherwise = "mkFromIntegral"
+          in
+          instanceD (return []) (return ty) [return dec]
+
+#ifdef ACCELERATE_INTERNAL_CHECKS
         -- Get all the types that our dictionaries reify
         digItOut :: Name -> Q [Name]
         digItOut name = do
@@ -68,18 +83,11 @@ $(runQ $ do
             --
           concat `fmap` mapM dig cons
 
-        thFromIntegral :: Name -> Name -> Q Dec
-        thFromIntegral a b =
-          let
-              ty  = AppT (AppT (ConT (mkName "FromIntegral")) (ConT a)) (ConT b)
-              dec = ValD (VarP (mkName "fromIntegral")) (NormalB (VarE (mkName f))) []
-              f | a == b    = "id"
-                | otherwise = "mkFromIntegral"
-          in
-          instanceD (return []) (return ty) [return dec]
-    --
     as <- digItOut ''IntegralType
     bs <- digItOut ''NumType
+    if as != as' then error "Types changed? Adjust TH in FromIntegral" else ()
+    if bs != bs' then error "Types changed? Adjust TH in FromIntegral" else ()
+#endif
     sequence [ thFromIntegral a b | a <- as, b <- bs ]
  )
 

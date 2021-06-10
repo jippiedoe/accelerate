@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                   #-}
 {-# LANGUAGE ConstraintKinds       #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
@@ -46,6 +47,20 @@ class ToFloating a b where
 --
 $(runQ $ do
     let
+        bs = [''Half, ''Float, ''Double]
+        as = [''Int, ''Int8, ''Int16, ''Int32, ''Int64, ''Word, ''Word8, ''Word16, ''Word32, ''Word64] ++ bs
+       
+        thToFloating :: Name -> Name -> Q Dec
+        thToFloating a b =
+          let
+              ty  = AppT (AppT (ConT (mkName "ToFloating")) (ConT a)) (ConT b)
+              dec = ValD (VarP (mkName "toFloating")) (NormalB (VarE (mkName f))) []
+              f | a == b    = "id"
+                | otherwise = "mkToFloating"
+          in
+          instanceD (return []) (return ty) [return dec]
+
+#ifdef ACCELERATE_INTERNAL_CHECKS
         -- Get all the types that our dictionaries reify
         digItOut :: Name -> Q [Name]
         digItOut name = do
@@ -63,18 +78,11 @@ $(runQ $ do
             --
           concat `fmap` mapM dig cons
 
-        thToFloating :: Name -> Name -> Q Dec
-        thToFloating a b =
-          let
-              ty  = AppT (AppT (ConT (mkName "ToFloating")) (ConT a)) (ConT b)
-              dec = ValD (VarP (mkName "toFloating")) (NormalB (VarE (mkName f))) []
-              f | a == b    = "id"
-                | otherwise = "mkToFloating"
-          in
-          instanceD (return []) (return ty) [return dec]
-    --
-    as <- digItOut ''NumType
-    bs <- digItOut ''FloatingType
+    as' <- digItOut ''NumType
+    bs' <- digItOut ''FloatingType
+    if as != as' then error "Types changed? Adjust TH in ToFloating." else ()
+    if bs != bs' then error "Types changed? Adjust TH in ToFloating." else ()
+#endif
     sequence [ thToFloating a b | a <- as, b <- bs ]
  )
 
