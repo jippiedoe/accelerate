@@ -13,6 +13,7 @@
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver where
 
 import qualified Data.Map as M
+import Data.Proxy (Proxy)
 -- Uses an hs-boot file to break an unfortunate cyclic import situation with D.A.A.T.P.ILP.Graph:
 -- `ILPSolver` references `Var` in type signatures, `Var` contains `BackendVar`,
 -- `BackendVar` is in the class `MakesILP`, which references `Information`,
@@ -21,11 +22,15 @@ import qualified Data.Map as M
 import {-# SOURCE #-} Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph ( Var, MakesILP )
 
 
--- Currently the only instance is for MIP, which gives bindings to a couple of solvers.
--- Still, this way we minimise the surface that has to interact with MIP, can more easily
--- adapt if it changes, and we could easily add more bindings.
-class (MakesILP op) => ILPSolver ilp op where
-  solve :: ilp -> ILP op -> IO (Maybe (Solution op))
+-- The `provider` selects the ILP backend: MIPProvider for MIP, and LimpProvider
+-- for `limp`, a naive Haskell implementation with no external dependencies.
+-- The `ilp` type parameter gives further settings for the given provider, e.g.
+-- for MIP, this selects which native solver to use (cbc, gurobi, ...).
+--
+-- This class minimises the surface that has to interact with MIP, so we can
+-- more easily adapt if it changes, and we can easily add more bindings.
+class (MakesILP op) => ILPSolver provider ilp op where
+  solve :: Proxy provider -> ilp -> ILP op -> IO (Maybe (Solution op))
 
 
 
