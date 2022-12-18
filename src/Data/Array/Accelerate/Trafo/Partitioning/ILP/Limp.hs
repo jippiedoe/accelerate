@@ -3,6 +3,7 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Limp (LimpProvider) where
 
@@ -15,40 +16,53 @@ import qualified Numeric.Limp.Solve.Simplex.StandardForm as L (standard)
 import qualified Numeric.Limp.Solve.Simplex.Maps as L (simplex, assignment)
 import qualified Numeric.Limp.Solve.Branch.Simple as L (branch)
 
-import Data.Bifunctor (bimap)
-import Data.List (inits, tails)
+import Data.Bifunctor (bimap, second)
+import Data.List (inits, tails, foldl')
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Proxy (Proxy)
 import qualified Data.Set as Set
 import Data.Void (Void)
 
+-- import qualified Debug.Trace
+
 
 data LimpProvider
 
 instance MakesILP op => ILPSolver LimpProvider () op where
   solve :: Proxy LimpProvider -> s -> ILP op -> IO (Maybe (Solution op))
-  solve _ _ ilp = return $
-    let SaneILP dir obj preConstrs = eliminateEqualities (toSane ilp)
+  solve _ _ ilp =
+    let (SaneILP dir obj preConstrs, equlog) = eliminateEqualities (toSane ilp)
         (objExpr, _objConst) = exprToLimp obj
         (constrs, bounds) = splitOutBounds preConstrs
         objMultiplier = case dir of Maximise -> -1
                                     Minimise -> 1
-        definfbounds = Map.fromList [(Left v, (Nothing, Nothing))
-                                    | v <- Set.toList $ allvars obj <> allvarsC preConstrs]
+        progVars = Set.toList $ allvars obj <> allvarsC preConstrs
+        definfbounds = Map.fromList [(Left v, (Nothing, Nothing)) | v <- progVars]
         program = L.Program
           { L._objective = case objExpr of L.Linear m -> L.Linear ((* objMultiplier) <$> m)
           , L._constraints = L.Constraint (map constraintToLimp constrs)
           , L._bounds = boundsToLimp bounds <> definfbounds   -- note: left-biased union
           }
-    in unlimpify . fst <$> L.branch (fmap L.assignment . L.simplex . L.standard) program
+    in return $
+       -- Debug.Trace.traceShow (SaneILP dir obj preConstrs) $
+       -- Debug.Trace.trace ("Equalities:\n" ++ unlines (map show equlog)) $
+       restoreEqus equlog . zeroMissingVars progVars . unlimpify . fst
+         <$> L.branch (fmap L.assignment . L.simplex . L.standard) program
     where
       allvars (Expr terms _) = Map.keysSet terms
       allvarsC l = foldMap (\(e1, _, e2) -> allvars e1 <> allvars e2) l
+      zeroMissingVars vars sol = sol <> Map.fromList (zip vars (repeat 0))
+      restoreEqus equlog sol =
+        -- Debug.Trace.trace ("Solution:\n" ++ show sol) $
+        foldr restoreEquality sol equlog
 
 data SaneILP op = SaneILP OptDir (Expr op) [(Expr op, Rel, Expr op)]
+deriving instance Show (BackendVar op) => Show (SaneILP op)
 data Expr op = Expr (Map (Var op) Int) Int
+deriving instance Show (BackendVar op) => Show (Expr op)
 data Rel = RLE | REQ | RGE
+  deriving (Show)
 
 instance Ord (BackendVar op) => Semigroup (Expr op) where
   Expr m1 c1 <> Expr m2 c2 = Expr (Map.unionWith (+) m1 m2) (c1 + c2)
@@ -99,14 +113,15 @@ constraintToLimp (_, REQ, _) = error "Equalities should be gone by now"
 boundsToLimp :: Ord (BackendVar op)
              => Map (Var op) (Maybe Int, Maybe Int)
              -> Map (Either (Var op) Void) (Maybe (L.R L.IntDouble), Maybe (L.R L.IntDouble))
-boundsToLimp = Map.mapKeys Left . fmap (bimap (fmap fromIntegral) (fmap fromIntegral))
+boundsToLimp = Map.mapKeys Left . Map.map (bimap (fmap fromIntegral) (fmap fromIntegral))
 
 splitOutBounds :: Ord (BackendVar op)
                => [(Expr op, Rel, Expr op)]
                -> ([(Expr op, Rel, Expr op)], Map (Var op) (Maybe Int, Maybe Int))
 splitOutBounds =
   foldr (bimap2 (++)
-                (Map.unionWith (bimap2 (combine max) (combine min))) . discriminate)
+                (Map.unionWith (bimap2 (combine max) (combine min)))
+         . discriminate)
         ([], mempty)
   where
     combine :: (a -> a -> a) -> Maybe a -> Maybe a -> Maybe a
@@ -146,6 +161,7 @@ splitOutBounds =
     discriminate (_, REQ, _) = error "Equalities should be gone by now"
 
 data Equality op = TrivialEquality | Equality (Var op) (Expr op)
+deriving instance Show (BackendVar op) => Show (Equality op)
 
 solveEquality :: Ord (BackendVar op) => Expr op -> Expr op -> Equality op
 solveEquality e1 e2 =
@@ -171,17 +187,36 @@ substitute equ (SaneILP dir target constrs) =
     subL TrivialEquality e = e
     subL (Equality var def) (Expr terms cnst) =
       let subTerm (v, coef)
-            | v == var = def
+            | v == var = mulExpr coef def
             | otherwise = Expr (Map.singleton v coef) 0
       in foldMap subTerm (Map.assocs terms) <> Expr mempty cnst
 
-eliminateEqualities :: Ord (BackendVar op) => SaneILP op -> SaneILP op
+    mulExpr n (Expr m cnst) = Expr (Map.map (n*) m) (n * cnst)
+
+-- Returns equalities substituted, in order of substitution. That means: to restore all
+-- original variables, restore the equalities from the tail to the head.
+eliminateEqualities :: Ord (BackendVar op) => SaneILP op -> (SaneILP op, [Equality op])
 eliminateEqualities ilp@(SaneILP dir target constrs) =
   case [x | x@(_, (_, REQ, _), _) <- splits constrs] of
-    [] -> ilp
+    [] -> (ilp, [])
     (pre, (lhs, _, rhs), post) : _ ->
       let equ = solveEquality lhs rhs
-      in eliminateEqualities (substitute equ (SaneILP dir target (pre ++ post)))
+      in second (equ:) $
+           eliminateEqualities (substitute equ (SaneILP dir target (pre ++ post)))
+
+restoreEquality :: (Ord (BackendVar op), Show (BackendVar op))
+                => Equality op -> Solution op -> Solution op
+restoreEquality TrivialEquality sol = sol
+restoreEquality (Equality var def) sol =
+  Map.insertWith (error "Variable substituted away is still present?")
+    var (compute def sol) sol
+
+compute :: (Ord (BackendVar op), Show (BackendVar op))
+        => Expr op -> Solution op -> Int
+compute (Expr terms cnst) sol = foldl' (+) cnst (map computeTerm (Map.assocs terms))
+  where computeTerm (v, coef) = case Map.lookup v sol of
+          Nothing -> error $ "Variable used in equality not present in solution: " ++ show v
+          Just value -> coef * value
 
 unlimpify :: L.Assignment (Var op) Void L.IntDouble -> Solution op
 unlimpify (L.Assignment zvarmap rvarmap)
