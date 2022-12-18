@@ -46,7 +46,8 @@ type Solution op = M.Map (Var op) Int
 -- given `n` (for the number of nodes in the ILP), make an Int
 newtype Number = Number (Int -> Int)
 instance Show Number where
-  show (Number f) = "Number {" ++ show (f 1) ++ "}"
+  showsPrec d (Number f) =
+    showParen (d > 10) $ showString "Number {" . showsPrec 0 (f 1) . showString "}"
 
 data Expression op where
   Constant :: Number -> Expression op
