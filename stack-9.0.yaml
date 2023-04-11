@@ -7,7 +7,8 @@ resolver: nightly-2022-02-16
 packages:
 - .
 
-# extra-deps: []
+extra-deps:
+- limp-0.3.2.3
 
 # Override default flag values for local packages and extra-deps
 # flags: {}

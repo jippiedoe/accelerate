@@ -13,6 +13,7 @@
 {-# LANGUAGE InstanceSigs #-}
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP (
+  MIPProvider,
   -- Exports default paths to 6 solvers, as well as an instance to ILPSolver for all of them
   cbc, cplex, glpsol, gurobiCl, lpSolve, scip
   ) where
@@ -33,15 +34,18 @@ import Data.Bifunctor (bimap, first)
 import Numeric.Optimization.MIP.Solver
     ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
 import Data.Maybe (mapMaybe)
+import Data.Proxy
 import Control.Monad.State ( State, gets, modify, runState )
 import Control.Monad.Reader ( Reader, asks, runReader )
 import Lens.Micro.Mtl ( zoom )
 import Lens.Micro ( _2 )
 import qualified Debug.Trace
 
-instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
-  solve :: s -> ILP op -> IO (Maybe (Solution op))
-  solve s (ILP dir obj constr bnds n) = Debug.Trace.traceShowId . makeSolution names <$> MIP.solve s options problem
+data MIPProvider
+
+instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver MIPProvider s op where
+  solve :: Proxy MIPProvider -> s -> ILP op -> IO (Maybe (Solution op))
+  solve _ s (ILP dir obj constr bnds n) = Debug.Trace.traceShowId . makeSolution names <$> MIP.solve s options problem
     where
       options = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
                                 , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)

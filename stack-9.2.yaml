@@ -11,6 +11,7 @@ packages:
 extra-deps:
 - base-compat-0.12.1
 - doctest-0.20.0
+- limp-0.3.2.3
 
 # Override default flag values for local packages and extra-deps
 # flags: {}

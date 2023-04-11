@@ -351,6 +351,7 @@ library
         , hashable                      >= 1.1
         , hashtables                    >= 1.2.3
         , hedgehog                      >= 0.5
+        , limp                          >= 0.3.2.3
         , microlens                     >= 0.4
         , microlens-th                  >= 0.4
         , microlens-mtl                 >= 0.2
@@ -451,6 +452,7 @@ library
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
+        Data.Array.Accelerate.Trafo.Partitioning.ILP.Limp
         Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP
         Data.Array.Accelerate.Trafo.Partitioning.ILP.NameGeneration
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve

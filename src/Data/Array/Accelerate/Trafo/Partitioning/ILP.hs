@@ -18,46 +18,52 @@ import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
     ( ILPSolver(solve) )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP
-    ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
+    ( MIPProvider, cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Limp
+    ( LimpProvider )
 
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
 import Data.Map (Map)
+import Data.Proxy (Proxy(..))
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 import Data.Function ((&))
 
 
-cbcFusion, gurobiFusion, cplexFusion, glpsolFusion, lpSolveFusion, scipFusion 
+cbcFusion, gurobiFusion, cplexFusion, glpsolFusion, lpSolveFusion, scipFusion, limpFusion
   :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => OperationAcc op () a -> PartitionedAcc op () a
-cbcFusion     = ilpFusion cbc
-gurobiFusion  = ilpFusion gurobiCl
-cplexFusion   = ilpFusion cplex
-glpsolFusion  = ilpFusion glpsol
-lpSolveFusion = ilpFusion lpSolve
-scipFusion    = ilpFusion scip
+cbcFusion     = ilpFusion (Proxy @MIPProvider) cbc
+gurobiFusion  = ilpFusion (Proxy @MIPProvider) gurobiCl
+cplexFusion   = ilpFusion (Proxy @MIPProvider) cplex
+glpsolFusion  = ilpFusion (Proxy @MIPProvider) glpsol
+lpSolveFusion = ilpFusion (Proxy @MIPProvider) lpSolve
+scipFusion    = ilpFusion (Proxy @MIPProvider) scip
+limpFusion    = ilpFusion (Proxy @LimpProvider) ()
 
-cbcFusionF, gurobiFusionF, cplexFusionF, glpsolFusionF, lpSolveFusionF, scipFusionF 
+cbcFusionF, gurobiFusionF, cplexFusionF, glpsolFusionF, lpSolveFusionF, scipFusionF, limpFusionF
   :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => OperationAfun op () a -> PartitionedAfun op () a
-cbcFusionF     = ilpFusionF cbc
-gurobiFusionF  = ilpFusionF gurobiCl
-cplexFusionF   = ilpFusionF cplex
-glpsolFusionF  = ilpFusionF glpsol
-lpSolveFusionF = ilpFusionF lpSolve
-scipFusionF    = ilpFusionF scip
+cbcFusionF     = ilpFusionF (Proxy @MIPProvider) cbc
+gurobiFusionF  = ilpFusionF (Proxy @MIPProvider) gurobiCl
+cplexFusionF   = ilpFusionF (Proxy @MIPProvider) cplex
+glpsolFusionF  = ilpFusionF (Proxy @MIPProvider) glpsol
+lpSolveFusionF = ilpFusionF (Proxy @MIPProvider) lpSolve
+scipFusionF    = ilpFusionF (Proxy @MIPProvider) scip
+limpFusionF    = ilpFusionF (Proxy @LimpProvider) ()
 
-ilpFusion  :: (MakesILP op, ILPSolver s op, Pretty.PrettyOp (Cluster op)) => s -> OperationAcc  op () a -> PartitionedAcc op () a
+ilpFusion  :: (MakesILP op, ILPSolver provider s op, Pretty.PrettyOp (Cluster op)) => Proxy provider -> s -> OperationAcc  op () a -> PartitionedAcc op () a
 ilpFusion  = ilpFusion' makeFullGraph  reconstruct
 
-ilpFusionF :: (MakesILP op, ILPSolver s op, Pretty.PrettyOp (Cluster op)) => s -> OperationAfun op () a -> PartitionedAfun op () a
+ilpFusionF :: (MakesILP op, ILPSolver provider s op, Pretty.PrettyOp (Cluster op)) => Proxy provider -> s -> OperationAfun op () a -> PartitionedAfun op () a
 ilpFusionF = ilpFusion' makeFullGraphF reconstructF
 
-ilpFusion' :: (MakesILP op, ILPSolver s op) 
+ilpFusion' :: (MakesILP op, ILPSolver provider s op) 
            => (x -> (Information op, Map Label (Construction op))) 
            -> (Graph -> [ClusterLs] -> Map Label [ClusterLs] -> Map Label (Construction op) -> y) 
+           -> Proxy provider
            -> s 
            -> x 
            -> y
-ilpFusion' k1 k2 s acc = fusedAcc
+ilpFusion' k1 k2 provider s acc = fusedAcc
   where
     (info@(Info graph _ _), constrM') = k1 acc
     constrM = backendConstruc solution constrM'
@@ -66,7 +72,7 @@ ilpFusion' k1 k2 s acc = fusedAcc
     interpreted                       = interpretSolution solution
     (labelClusters, labelClustersM)   = splitExecs interpreted constrM
     fusedAcc                          = k2 graph labelClusters labelClustersM constrM
-    solve' x = unsafePerformIO (solve s x) & \case
+    solve' x = unsafePerformIO (solve provider s x) & \case
       Nothing -> error "Accelerate: No ILP solution found"
       Just y -> y
 
