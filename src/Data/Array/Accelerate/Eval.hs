@@ -205,6 +205,14 @@ class (StaticClusterAnalysis op, Monad (EvalMonad op), TupRmonoid (Embed' op))
   writeOutput :: ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Env (EnvF op) env -> Index op -> Embed' op e -> EvalMonad op ()
   readInput :: ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Env (EnvF op) env -> BackendClusterArg2 op env (In sh e) -> Index op -> EvalMonad op (Embed' op e)
 
+  writeOutputs :: TypeR e -> GroundVars env sh -> GroundVars env (Buffers e) -> Env (EnvF op) env -> Index op -> Embed' op e -> EvalMonad op ()
+  writeOutputs TupRunit a b c d e = pure ()
+  writeOutputs (TupRpair x y) a (TupRpair bx by) c d (unpair' -> (ex, ey)) = writeOutputs @op x a bx c d ex >> writeOutputs @op y a by c d ey
+  writeOutputs (TupRsingle x) a b c d e = writeOutput @op x a b c d e
+  writeOutputs _ _ _ _ _ _ = error "huh"
+
+
+
 type family Embed op a where
   Embed op (Value sh e) = Value' op sh e
   Embed op (Sh sh e) = Sh' op sh e

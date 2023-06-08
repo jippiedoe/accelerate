@@ -571,8 +571,22 @@ instance EvalOp InterpretOp where
     pure $ Push Empty (FromArg $ Value' x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
   evalOp i IGenerate env (Push (Push _ (BAE (Shape' shr sh) (BCA bp))) (BAE f _)) =
     pure $ Push Empty (FromArg $ Value' (Identity $ evalFun f (evalArrayInstrDefault env) (fromIndex shr (runIdentity sh) (bp i))) (Shape' shr sh))
-  evalOp _ _ _ _ = error "evalOp todo"
-
+  evalOp i IPermute env (Push (Push (Push (Push _ (BAE (Value' (Identity x) (Shape' shrX (Identity shX))) (BCA idx))) (BAE shfun _)) (BAE (ArrayDescriptor shr sh buf, ty) _)) (BAE f _)) =
+    do
+      let i' = idx i
+          i'' = evalFun shfun (evalArrayInstrDefault env) . fromIndex shrX shX $ i'
+      case i'' of
+        (0, _) -> pure Empty
+        (1, ((), i''')) -> do
+          let sh' = varsGetVal sh env
+          let ix = toIndex shr sh' i'''
+          Identity y <- readInputs ty sh buf env (BCA id) ix
+          writeOutputs @InterpretOp ty sh buf env ix (Identity $ evalFun f (evalArrayInstrDefault env) x y)
+          pure Empty
+        _ -> error "non-binary tag on maybe"
+  evalOp _ IFold1{} _ _ = error "todo: fold"
+  evalOp _ IScan1{} _ _ = error "todo: scan"
+  evalOp _ IAppend{} _ _ = error "todo: append"
   writeOutput r _ buf env n (Identity x) = writeBuffers (TupRsingle r) (veryUnsafeUnfreezeBuffers (TupRsingle r) $ varsGetVal buf env) n x
   readInput r _ buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
 
@@ -580,6 +594,10 @@ instance EvalOp InterpretOp where
   indexsh' evs env = pure . Identity $ varsGetVal evs env
   subtup s = Identity . subTup s . runIdentity
 
+readInputs :: TypeR e -> GroundVars env sh -> GroundVars env (Buffers e) -> Env (EnvF InterpretOp) env -> BackendClusterArg2 InterpretOp env (In sh e) -> Index InterpretOp -> EvalMonad InterpretOp (Embed' InterpretOp e)
+readInputs TupRunit a b c d e = pure $ Identity ()
+readInputs (TupRpair x y) a (TupRpair bx by) c d e = pair' <$> readInputs x a bx c (shrinkOrGrow d) e <*> readInputs y a by c (shrinkOrGrow d) e
+readInputs (TupRsingle x) a b c d e = readInput x a b c d e
 
 evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
 evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = doNTimes (iterationsize io args env) $ evalCluster c args env
