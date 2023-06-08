@@ -102,6 +102,8 @@ import Data.Array.Accelerate.Eval
 import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Functor.Identity
 import Data.Array.Accelerate.Trafo.LiveVars
+import Data.Maybe (fromJust)
+import Control.Applicative ((<|>))
 data Interpreter
 instance Backend Interpreter where
   type Schedule Interpreter = UniformScheduleFun
@@ -584,15 +586,20 @@ evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = doNTimes (iterat
 
 -- TODO update when we add folds, reconsider when we add scans that add 1 to the size...
 iterationsize :: ClusterIO args i o -> Args env args -> Val env -> Int
-iterationsize io args env = case io of
-  P.Empty -> error "no size"
-  P.Output {}   -> case args of ArgArray Out (ArrayR shr _) sh _ :>: _ -> arrsize shr (varsGetVal sh env)
-  P.Vertical _ _ io' -> case args of -- skip past this one
-    ArgVar _ :>: args' -> iterationsize io' args' env
-  P.Input  io'       -> case args of ArgArray In  _ _ _ :>: args' -> iterationsize io' args' env   -- -> arrsize shr (varsGetVal sh env)
-  P.MutPut io'       -> case args of ArgArray Mut _ _ _ :>: args' -> iterationsize io' args' env -- arrsize shr (varsGetVal sh env)
-  P.ExpPut' io' -> case args of _ :>: args' -> iterationsize io' args' env -- skip past this one
-  P.Trivial io' -> case args of _ :>: args' -> iterationsize io' args' env
+iterationsize io args env = fromJust $ go io args env
+  where 
+    go :: ClusterIO args i o -> Args env args -> Val env -> Maybe Int
+    go io args env = case io of
+      P.Empty -> Nothing
+      P.Output {}   -> case args of ArgArray Out (ArrayR shr _) sh _ :>: _ -> Just $ arrsize shr (varsGetVal sh env)
+      P.Vertical _ _ io' -> case args of -- skip past this one
+        ArgVar _ :>: args' -> go io' args' env
+      -- when no other arguments return a size, use the size of the input
+      -- implicit: because there is no output and no fusion, we know that there is no backpermute in the cluster, so this is safe
+      P.Input  io'       -> case args of ArgArray In  (ArrayR shr _) sh _ :>: args' -> go io' args' env <|> Just (arrsize shr (varsGetVal sh env))
+      P.MutPut io'       -> case args of ArgArray Mut _ _ _ :>: args' -> go io' args' env -- arrsize shr (varsGetVal sh env)
+      P.ExpPut' io' -> case args of _ :>: args' -> go io' args' env -- skip past this one
+      P.Trivial io' -> case args of _ :>: args' -> go io' args' env
 
 
 arrsize :: ShapeR sh -> sh -> Int
