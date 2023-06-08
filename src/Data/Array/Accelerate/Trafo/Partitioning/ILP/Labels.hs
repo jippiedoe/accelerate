@@ -205,8 +205,10 @@ getLabelsArg (ArgFun fun)                  env = getLabelsFun fun    env
 
 -- The comment above is outdated, but I'm not sure what is going on here anymore. What are the two types of return arguments from getLabelsTup? Does it make sense that a TupRsingle always gives Right?
 -- ALabels shouldn't contain a single ELabel for arrays, but a TupR of ELabels (one for each buffer)!
-getLabelsArg (ArgArray _ _ _ buVars) env = let (Arr x,             buLabs) = getLabelsTup buVars env
-                                           in  (unBuffers $ Arr x, buLabs)
+getLabelsArg (ArgArray _ _ shVars buVars) env = 
+  let (Arr x,             buLabs) = getLabelsTup buVars env
+      (_, shLabs) = getLabelsTup shVars env
+  in  (unBuffers $ Arr x, buLabs <> shLabs)
 
 getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> ALabels (m sh b)
 getLabelsTup TupRunit         _   = (Arr TupRunit, mempty)
@@ -287,7 +289,7 @@ getLabelsExp (PrimConst _) _                = (NotArr, mempty)
 getLabelsExp (PrimApp _ poe') env           = first (\NotArr -> NotArr) $ getLabelsExp poe' env
 getLabelsExp (ShapeSize _ poe') env         = first (\NotArr -> NotArr) $ getLabelsExp poe' env
 getLabelsExp (Undef _) _                    = (NotArr, mempty)
-getLabelsExp Coerce {} _                    = (NotArr, mempty)
+getLabelsExp (Coerce _ _ e)  env                    = first (\NotArr -> NotArr) $ getLabelsExp e env
 
 getLabelsFun :: OpenFun x env y -> LabelEnv env -> ALabels (Fun' y)
 getLabelsFun (Body expr) lenv = first body $ getLabelsExp expr lenv
